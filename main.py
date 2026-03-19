@@ -23,17 +23,30 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# GLOBAL GRID
+# ŞEHİRLER
 # =========================
-GRID = [
-    (-20, -60),
-    (0, -30),
-    (10, 0),
-    (20, 30),
-    (25, 45),
-    (35, 35),
-    (35, 60),
-]
+CITIES = {
+    "istanbul": (41.01, 28.97),
+    "ankara": (39.93, 32.85),
+    "izmir": (38.42, 27.14),
+    "mekke": (21.39, 39.86),
+    "medine": (24.47, 39.61),
+    "cidde": (21.54, 39.17),
+    "tahran": (35.68, 51.41),
+    "kabil": (34.55, 69.20),
+}
+
+# =========================
+# GRID
+# =========================
+GRID = {
+    "Amerika": (0, -70),
+    "Afrika": (15, 30),
+    "Türkiye": (39, 35),
+    "Suudi": (21, 39),
+    "İran": (35, 51),
+    "Afganistan": (34, 65),
+}
 
 # =========================
 # NEW MOON
@@ -50,11 +63,13 @@ def get_new_moons():
         if p == 0
     ]
 
+NEW_MOONS = get_new_moons()
+
 # =========================
 # PARAM
 # =========================
-def hilal_param(date, lat, lon):
-    t = ts.utc(date.year, date.month, date.day, 18)
+def hilal_param(date, lat, lon, hour=18):
+    t = ts.utc(date.year, date.month, date.day, hour)
 
     loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
 
@@ -68,195 +83,167 @@ def hilal_param(date, lat, lon):
     return alt.degrees, elong
 
 # =========================
-# SKOR
+# SKOR (GELİŞMİŞ)
 # =========================
-def global_score(date, new_moon):
+def score(alt, elong):
+    return (alt * 0.6) + (elong * 0.4)
 
-    best = -999
+def label(s):
+    if s < 5:
+        return "❌"
+    elif s < 8:
+        return "⚠️"
+    else:
+        return "✅"
 
-    for lat, lon in GRID:
+# =========================
+# GLOBAL ANALİZ
+# =========================
+def global_analysis(date):
+
+    best = ("", -999)
+    data = []
+
+    for name, (lat, lon) in GRID.items():
 
         alt, elong = hilal_param(date, lat, lon)
+        s = score(alt, elong)
 
-        age = (datetime(date.year, date.month, date.day, tzinfo=timezone.utc) - new_moon).total_seconds() / 3600
+        data.append((name, alt, elong, s))
 
-        score = (alt * 0.5) + (elong * 0.3) + (age * 0.2)
+        if s > best[1]:
+            best = (name, s)
 
-        if score > best:
-            best = score
-
-    return best
-
-# =========================
-# SELF LEARNING EŞİK
-# =========================
-THRESHOLD_STRONG = 7
-THRESHOLD_WEAK = 5.5
+    return data, best
 
 # =========================
-# KARAR
+# ŞEHİR ANALİZ (SAATLİ)
 # =========================
-def choose_day(nm):
+def city_analysis(city, date):
 
-    d1 = (nm + timedelta(days=1)).date()
-    d2 = (nm + timedelta(days=2)).date()
+    lat, lon = CITIES[city]
 
-    s1 = global_score(d1, nm)
+    best_hour = None
+    best_score = -999
 
-    if s1 > THRESHOLD_STRONG:
-        return d1
+    for h in range(15, 21):
 
-    elif THRESHOLD_WEAK < s1 <= THRESHOLD_STRONG:
-        return d1  # borderline accept
+        alt, elong = hilal_param(date, lat, lon, h)
+        s = score(alt, elong)
 
-    else:
-        return d2
+        if s > best_score:
+            best_score = s
+            best_hour = h
 
-# =========================
-# AYLAR
-# =========================
-def build_months():
-
-    new_moons = get_new_moons()
-    months = []
-
-    for nm in new_moons:
-        months.append(choose_day(nm))
-
-    return sorted(months)
-
-MONTHS = build_months()
-
-AYLAR = [
-    "Muharrem","Safer","Rebiülevvel","Rebiülahir",
-    "Cemaziyelevvel","Cemaziyelahir","Recep",
-    "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
-]
+    return best_hour, best_score
 
 # =========================
-# ANCHOR
+# HİLAL KOMUTU
 # =========================
-ANCHOR = datetime(2025, 5, 29).date()
-
-ANCHOR_INDEX = min(
-    range(len(MONTHS)),
-    key=lambda i: abs((MONTHS[i] - ANCHOR).days)
-)
-
-# =========================
-# HİCRİ BUL
-# =========================
-def get_hijri(date):
-
-    idx = None
-
-    for i, m in enumerate(MONTHS):
-        if m <= date:
-            idx = i
-
-    if idx is None:
-        return None
-
-    start = MONTHS[idx]
-
-    gun = (date - start).days + 1
-    ay = (idx - ANCHOR_INDEX + 11) % 12
-    yil = 1447 + ((idx - ANCHOR_INDEX) // 12)
-
-    return gun, AYLAR[ay], yil, idx
-
-# =========================
-# BUGÜN
-# =========================
-async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     today = datetime.now(timezone.utc).date()
 
-    h = get_hijri(today)
+    data, best = global_analysis(today)
 
-    if not h:
-        await update.message.reply_text("Hata")
+    text = "🌙 HİLAL ANALİZ\n\n"
+
+    for name, alt, elong, s in data:
+        text += f"{name}: {label(s)} ({s:.1f})\n"
+
+    text += f"\n🌍 İlk güçlü bölge: {best[0]}"
+
+    await update.message.reply_text(text)
+
+# =========================
+# ŞEHİR KOMUTU
+# =========================
+async def sehir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+        city = context.args[0].lower()
+    except:
+        await update.message.reply_text("Kullanım: /sehir istanbul")
         return
 
-    gun, ay, yil, _ = h
+    if city not in CITIES:
+        await update.message.reply_text("Şehir yok")
+        return
+
+    today = datetime.now(timezone.utc).date()
+
+    hour, s = city_analysis(city, today)
 
     await update.message.reply_text(
-        f"📅 Bugün\n\nMiladi: {today}\nHicri: {gun} {ay} {yil}"
+        f"🌙 {city.upper()}\n\n"
+        f"⏰ En iyi saat: {hour}:00 UTC\n"
+        f"Durum: {label(s)} ({s:.1f})"
     )
 
 # =========================
-# YIL ANALİZ
+# 3 GÜN
 # =========================
-async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    try:
-        year = int(context.args[0])
-    except:
-        await update.message.reply_text("Kullanım: /yil 2026")
-        return
+    today = datetime.now(timezone.utc).date()
 
-    text = f"📅 {year} ANALİZ\n\n"
+    text = "🌙 3 GÜN ANALİZ\n\n"
 
-    for i, m in enumerate(MONTHS):
+    for i, label_txt in [(-1, "Dün"), (0, "Bugün"), (1, "Yarın")]:
 
-        if m.year == year:
+        d = today + timedelta(days=i)
+        _, best = global_analysis(d)
 
-            ay = (i - ANCHOR_INDEX + 11) % 12
-            ay_adi = AYLAR[ay]
-
-            if ay_adi == "Ramazan":
-                text += f"🌙 Ramazan: {m}\n"
-                text += f"🎉 Bayram: {m + timedelta(days=29)}\n\n"
-
-            if ay_adi == "Zilhicce":
-                text += f"🐑 Arefe: {m + timedelta(days=8)}\n"
-                text += f"🐑 Bayram: {m + timedelta(days=9)}\n\n"
+        text += f"{label_txt}: {best[0]}\n"
 
     await update.message.reply_text(text)
 
 # =========================
-# TEST
+# HARİTA
 # =========================
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def harita(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    real = {
-        2025: "2025-03-01",
-        2024: "2024-03-11",
-        2023: "2023-03-23",
-        2022: "2022-04-02",
-        2021: "2021-04-13",
-        2020: "2020-04-24",
-    }
+    today = datetime.now(timezone.utc).date()
 
-    text = "📊 TEST\n\n"
+    data, _ = global_analysis(today)
 
-    for year, r in real.items():
+    text = "🗺️ HARİTA\n\n"
 
-        r_date = datetime.fromisoformat(r).date()
-
-        model = None
-
-        for i, m in enumerate(MONTHS):
-            ay = (i - ANCHOR_INDEX + 11) % 12
-
-            if m.year == year and ay == 8:
-                model = m
-
-        if model:
-            diff = (model - r_date).days
-            text += f"{year}: {diff} gün\n"
+    for name, _, _, s in data:
+        text += f"{name}: {label(s)}\n"
 
     await update.message.reply_text(text)
+
+# =========================
+# BAYRAM AI
+# =========================
+async def bayram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    today = datetime.now(timezone.utc).date()
+
+    _, best_today = global_analysis(today)
+    _, best_tomorrow = global_analysis(today + timedelta(days=1))
+
+    if best_today[1] > 8:
+        msg = "🎉 Yarın bayram olabilir"
+    elif best_tomorrow[1] > 8:
+        msg = "🎉 Bayram 2 gün sonra"
+    else:
+        msg = "❌ Henüz değil"
+
+    await update.message.reply_text(msg)
 
 # =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 SELF LEARNING HİCRİ\n\n"
-        "/bugun\n"
-        "/yil 2026\n"
-        "/test"
+        "🚀 V5 PRO HİLAL SİSTEMİ\n\n"
+        "/hilal\n"
+        "/sehir istanbul\n"
+        "/hilal_3gun\n"
+        "/harita\n"
+        "/bayram"
     )
 
 # =========================
@@ -265,9 +252,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("yil", yil))
-app.add_handler(CommandHandler("test", test))
+app.add_handler(CommandHandler("hilal", hilal))
+app.add_handler(CommandHandler("sehir", sehir))
+app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
+app.add_handler(CommandHandler("harita", harita))
+app.add_handler(CommandHandler("bayram", bayram))
 
-print("🚀 SELF LEARNING AKTİF")
+print("🚀 V5 PRO AKTİF")
 app.run_polling()
