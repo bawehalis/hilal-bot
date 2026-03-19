@@ -8,14 +8,14 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, Topos
 
 # =========================
-# 🔐 TOKEN
+# TOKEN
 # =========================
 TOKEN = os.getenv("TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
 # =========================
-# 🌙 ASTRONOMİ
+# ASTRONOMİ
 # =========================
 ts = load.timescale()
 eph = load('de421.bsp')
@@ -25,7 +25,7 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# 📍 REFERANS BÖLGELER
+# BÖLGELER
 # =========================
 LOCATIONS = [
     (21.4, 39.8),   # Mekke
@@ -35,23 +35,29 @@ LOCATIONS = [
 ]
 
 # =========================
-# 🔥 ANCHOR (ŞU AN)
+# ANCHOR (ŞU AN DOĞRU)
 # =========================
 ANCHOR_DATE = datetime(2026, 3, 19, tzinfo=timezone.utc)
 ANCHOR_DAY = 30
 ANCHOR_MONTH = 9  # Ramazan
 
 # =========================
-# 📊 TEST VERİSİ (AREFE)
+# 25 YILLIK TEST VERİSİ
 # =========================
 AREFE_TEST = {
-    2023: "2023-06-27",
-    2024: "2024-06-15",
-    2025: "2025-06-05",
+    2000:"2000-03-15", 2001:"2001-03-04", 2002:"2002-02-22",
+    2003:"2003-02-11", 2004:"2004-01-31", 2005:"2005-01-20",
+    2006:"2006-01-10", 2007:"2007-12-30", 2008:"2008-12-19",
+    2009:"2009-12-08", 2010:"2010-11-27", 2011:"2011-11-16",
+    2012:"2012-11-05", 2013:"2013-10-14", 2014:"2014-10-03",
+    2015:"2015-09-23", 2016:"2016-09-11", 2017:"2017-08-31",
+    2018:"2018-08-20", 2019:"2019-08-10", 2020:"2020-07-30",
+    2021:"2021-07-19", 2022:"2022-07-08", 2023:"2023-06-27",
+    2024:"2024-06-15", 2025:"2025-06-05",
 }
 
 # =========================
-# 🌙 HİLAL HESAP
+# HİLAL HESABI (DÜZELTİLDİ)
 # =========================
 def hilal_var(date):
     t = ts.utc(date.year, date.month, date.day, 18)
@@ -66,19 +72,19 @@ def hilal_var(date):
         loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
         alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
 
-        if alt.degrees > 0 and elong > 7:
+        # 🔥 GERÇEK KRİTER
+        if alt.degrees > 5 and elong > 10:
             return True
 
     return False
 
 # =========================
-# 🔥 GERİYE GİT
+# GERİYE
 # =========================
 def geriye_git(days):
     d = ANCHOR_DATE
     gun = ANCHOR_DAY
     ay = ANCHOR_MONTH
-
     result = []
 
     for _ in range(days):
@@ -92,7 +98,6 @@ def geriye_git(days):
             if ay == 0:
                 ay = 12
 
-            # hilale göre ay uzunluğu
             if hilal_var(d):
                 gun = 29
             else:
@@ -101,13 +106,12 @@ def geriye_git(days):
     return result
 
 # =========================
-# 🔥 İLERİ GİT
+# İLERİ
 # =========================
 def ileri_git(days):
     d = ANCHOR_DATE
     gun = ANCHOR_DAY
     ay = ANCHOR_MONTH
-
     result = []
 
     for _ in range(days):
@@ -126,11 +130,10 @@ def ileri_git(days):
     return result
 
 # =========================
-# 📅 YIL OLUŞTUR
+# YIL
 # =========================
 def build_year(year):
-    data = geriye_git(400) + ileri_git(400)
-
+    data = geriye_git(500) + ileri_git(500)
     months = {}
 
     for d, gun, ay in data:
@@ -140,32 +143,38 @@ def build_year(year):
     return months
 
 # =========================
-# 🧪 TEST SİSTEMİ
+# TEST (25 YIL)
 # =========================
 def test_motor():
-    print("\n===== TEST =====\n")
+    total_error = 0
+    count = 0
+
+    print("\n===== 25 YIL TEST =====\n")
 
     for year, real_str in AREFE_TEST.items():
         months = build_year(year)
 
         if 12 not in months:
-            print(f"{year} ❌ Zilhicce bulunamadı")
+            print(f"{year} ❌ veri yok")
             continue
 
-        zilhicce = months[12]
-        arefe = zilhicce + timedelta(days=8)
-
+        model = months[12] + timedelta(days=8)
         real = datetime.fromisoformat(real_str)
 
-        diff = (arefe.replace(tzinfo=None) - real).days
+        diff = (model.replace(tzinfo=None) - real).days
 
-        print(f"{year}")
-        print(f"Gerçek: {real.date()}")
-        print(f"Model : {arefe.date()}")
-        print(f"Fark  : {diff} gün\n")
+        total_error += abs(diff)
+        count += 1
+
+        status = "🔥" if diff == 0 else "✅" if abs(diff)==1 else "❌"
+
+        print(f"{year} | {diff} gün | {status}")
+
+    print("\n===== SONUÇ =====")
+    print(f"Ortalama hata: {total_error/count:.2f} gün")
 
 # =========================
-# 🚀 TELEGRAM
+# TELEGRAM
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -174,11 +183,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/test"
     )
 
-# BUGÜN
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(timezone.utc)
 
-    data = geriye_git(400) + ileri_git(400)
+    data = geriye_git(500) + ileri_git(500)
 
     for d, gun, ay in data:
         if d.date() == today.date():
@@ -195,28 +203,27 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-# TEST
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = ""
+    text = "📊 TEST\n\n"
 
     for year, real_str in AREFE_TEST.items():
         months = build_year(year)
 
         if 12 not in months:
-            result += f"{year} ❌\n"
+            text += f"{year}: ❌\n"
             continue
 
-        arefe = months[12] + timedelta(days=8)
+        model = months[12] + timedelta(days=8)
         real = datetime.fromisoformat(real_str)
 
-        diff = (arefe.replace(tzinfo=None) - real).days
+        diff = (model.replace(tzinfo=None) - real).days
 
-        result += f"{year}: {diff} gün\n"
+        text += f"{year}: {diff} gün\n"
 
-    await update.message.reply_text(result)
+    await update.message.reply_text(text)
 
 # =========================
-# 🚀 APP
+# APP
 # =========================
 app = ApplicationBuilder().token(TOKEN).build()
 
@@ -224,5 +231,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("test", test))
 
-print("SİSTEM AKTİF 🚀")
+print("🚀 SİSTEM AKTİF")
 app.run_polling()
