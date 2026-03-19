@@ -25,14 +25,14 @@ moon = eph['moon']
 sun = eph['sun']
 
 LOCATIONS = [
-    (21.4, 39.8),   # Mekke
-    (39.0, 35.0),   # Türkiye
-    (35.0, 51.0),   # İran
-    (34.5, 69.2),   # Afganistan
+    (21.4, 39.8),
+    (39.0, 35.0),
+    (35.0, 51.0),
+    (34.5, 69.2),
 ]
 
 # =========================
-# HİLAL (GERÇEKÇİ KRİTER)
+# HİLAL (OPTİMUM KRİTER)
 # =========================
 def hilal_var(date):
     t = ts.utc(date.year, date.month, date.day, 18)
@@ -47,21 +47,22 @@ def hilal_var(date):
         loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
         alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
 
-        if alt.degrees > 6 and elong > 11:
+        # 🔥 DENGELİ KRİTER
+        if alt.degrees > 4 and elong > 9:
             return True
 
     return False
 
 # =========================
-# 🔥 ANCHOR (SON DOĞRU NOKTA)
+# 🔥 ANCHOR (KESİN DOĞRU)
 # =========================
-# 2025 Arefe (9 Zilhicce)
+# 2025 Arefe = 5 Haziran
 ANCHOR_DATE = datetime(2025, 6, 5, tzinfo=timezone.utc)
 ANCHOR_DAY = 9
 ANCHOR_MONTH = 12  # Zilhicce
 
 # =========================
-# 🔥 ANA MOTOR (İLERİ SİMÜLASYON)
+# 🔥 ANA MOTOR (HER GÜN HİLAL)
 # =========================
 def build_timeline():
     timeline = []
@@ -70,22 +71,20 @@ def build_timeline():
     gun = ANCHOR_DAY
     ay = ANCHOR_MONTH
 
-    # 2035'e kadar hesapla
     while current.year <= 2035:
 
         timeline.append((current, gun, ay))
 
         next_day = current + timedelta(days=1)
 
-        gun += 1
-
-        # ay sonu kontrol
-        if gun > 30:
-            if hilal_var(next_day):
-                gun = 1
-                ay += 1
-                if ay > 12:
-                    ay = 1
+        # 🔥 HER GÜN HİLAL KONTROLÜ
+        if hilal_var(next_day):
+            gun = 1
+            ay += 1
+            if ay > 12:
+                ay = 1
+        else:
+            gun += 1
 
         current = next_day
 
@@ -115,10 +114,10 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    await update.message.reply_text("❌ Bugün bulunamadı")
+    await update.message.reply_text("❌ Bulunamadı")
 
 # =========================
-# 📆 YIL ANALİZ
+# 📆 YIL
 # =========================
 async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -154,7 +153,7 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌙 Hicri Motor (Anchor Model)\n\n"
+        "🌙 Gerçek Hicri Motor\n\n"
         "/bugun\n"
         "/yil 2026"
     )
@@ -168,5 +167,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("yil", yil))
 
-print("🚀 ANCHOR SİSTEM AKTİF")
+print("🚀 GERÇEK SİSTEM AKTİF")
 app.run_polling()
