@@ -50,20 +50,27 @@ def visible(date, lat, lon):
 
     return alt.degrees > 0 and elongation(t) > 7
 
-# 🔥 model arefe
+# 🔥 GÜÇLÜ AY BULMA (ASLA BOŞ DÖNMEZ)
+def find_month_safe(start_date):
+    for i in range(5):  # 3 yerine 5 gün arıyoruz
+        d = start_date + timedelta(days=i)
+
+        if any(visible(d,lat,lon) for lat,lon in COUNTRIES):
+            return d
+
+    # fallback (zorunlu ilerleme)
+    return start_date + timedelta(days=1)
+
+# 🔥 MODEL AREFE (FIX)
 def model_arefe(year):
     start = datetime(year,1,1,tzinfo=timezone.utc)
     current = start
     months = []
 
     for _ in range(12):
-        for i in range(3):
-            d = current + timedelta(days=i)
-
-            if any(visible(d,lat,lon) for lat,lon in COUNTRIES):
-                months.append(d)
-                current = d + timedelta(days=29)
-                break
+        m = find_month_safe(current)
+        months.append(m)
+        current = m + timedelta(days=29)
 
     return months[11] + timedelta(days=8)
 
@@ -72,21 +79,20 @@ def compute_offset():
     diffs = []
 
     for year, real_str in AREFE_DATA.items():
-        real = datetime.fromisoformat(real_str)  # naive
-        model = model_arefe(year).replace(tzinfo=None)  # FIX
+        real = datetime.fromisoformat(real_str)
+        model = model_arefe(year).replace(tzinfo=None)
 
-        diff = (real - model).days
-        diffs.append(diff)
+        diffs.append((real - model).days)
 
     return round(sum(diffs)/len(diffs))
 
 OFFSET = compute_offset()
 
-# 🔥 kalibre arefe
+# 🔥 KALİBRE AREFE
 def calibrated_arefe(year):
     return model_arefe(year) + timedelta(days=OFFSET)
 
-# 🔥 yıl oluştur
+# 🔥 YIL
 def build_year(year):
     arefe = calibrated_arefe(year)
 
@@ -125,10 +131,7 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 🚀 START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🌙 HİCRİ MOTOR\n\n"
-        "/bugun"
-    )
+    await update.message.reply_text("🌙 Sistem hazır\n\n/bugun")
 
 # 🚀 APP
 app = ApplicationBuilder().token(TOKEN).build()
@@ -136,5 +139,5 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 
-print("Çalışıyor 🚀")
+print("STABİL ÇALIŞIYOR 🚀")
 app.run_polling()
