@@ -54,13 +54,13 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL MODEL (OPTIMIZE EDİLECEK)
+# HİLAL MODEL
 # =========================
-def visible(date, nm, ALT_T=3, ELONG_T=6, AGE_T=10):
+def visible(date, nm, ALT_T, ELONG_T, AGE_T):
 
     t = ts.utc(date.year, date.month, date.day, 18)
 
-    loc = earth + Topos(21.4,39.8)
+    loc = earth + Topos(21.4,39.8)  # Mekke referans
 
     e = loc.at(t)
     m = e.observe(moon).apparent()
@@ -83,7 +83,6 @@ def build_months(ALT_T, ELONG_T, AGE_T):
     for nm in NEW_MOONS:
 
         for i in [1,2,3]:
-
             d = (nm + timedelta(days=i)).date()
 
             if visible(d, nm, ALT_T, ELONG_T, AGE_T):
@@ -95,15 +94,15 @@ def build_months(ALT_T, ELONG_T, AGE_T):
     return sorted(months)
 
 # =========================
-# TEST + OPTIMIZATION
+# OPTIMIZE (DOĞRU ARALIK)
 # =========================
 def optimize():
 
     best = None
     best_error = 9999
 
-    for alt in [2,3,4,5]:
-        for elong in [5,6,7,8]:
+    for alt in [2,3,4]:
+        for elong in [5,6,7]:
             for age in [8,10,12]:
 
                 months = build_months(alt, elong, age)
@@ -114,10 +113,9 @@ def optimize():
 
                     real = datetime.fromisoformat(real_str).date()
 
-                    # Ramazan bul
-                    closest = min(months, key=lambda x: abs((x-real).days))
+                    model = min(months, key=lambda x: abs((x-real).days))
 
-                    error += abs((closest - real).days)
+                    error += abs((model - real).days)
 
                 if error < best_error:
                     best_error = error
@@ -127,6 +125,9 @@ def optimize():
 
 ALT_T, ELONG_T, AGE_T = optimize()[0]
 
+# =========================
+# MONTHS
+# =========================
 MONTHS = build_months(ALT_T, ELONG_T, AGE_T)
 
 # =========================
@@ -174,7 +175,6 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for y, real_str in REAL.items():
 
         real = datetime.fromisoformat(real_str).date()
-
         model = min(MONTHS, key=lambda x: abs((x-real).days))
 
         diff = (model - real).days
@@ -212,5 +212,5 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("test", test))
 
-print("🚀 25 YIL OPTİMİZE SİSTEM AKTİF")
+print(f"🚀 OPTİMİZE AKTİF alt={ALT_T} elong={ELONG_T} age={AGE_T}")
 app.run_polling()
