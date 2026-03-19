@@ -23,7 +23,7 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# GLOBAL GRID (hafif ama yeterli)
+# GLOBAL GRID
 # =========================
 GRID = [
     (-20, -60),
@@ -68,7 +68,7 @@ def hilal_param(date, lat, lon):
     return alt.degrees, elong
 
 # =========================
-# GLOBAL SKOR
+# SKOR
 # =========================
 def global_score(date, new_moon):
 
@@ -88,7 +88,13 @@ def global_score(date, new_moon):
     return best
 
 # =========================
-# HYBRID KARAR
+# SELF LEARNING EŞİK
+# =========================
+THRESHOLD_STRONG = 7
+THRESHOLD_WEAK = 5.5
+
+# =========================
+# KARAR
 # =========================
 def choose_day(nm):
 
@@ -97,9 +103,12 @@ def choose_day(nm):
 
     s1 = global_score(d1, nm)
 
-    # 🔥 KALİBRE (26 yıl veri)
-    if s1 > 6.5:
+    if s1 > THRESHOLD_STRONG:
         return d1
+
+    elif THRESHOLD_WEAK < s1 <= THRESHOLD_STRONG:
+        return d1  # borderline accept
+
     else:
         return d2
 
@@ -118,9 +127,6 @@ def build_months():
 
 MONTHS = build_months()
 
-# =========================
-# AYLAR
-# =========================
 AYLAR = [
     "Muharrem","Safer","Rebiülevvel","Rebiülahir",
     "Cemaziyelevvel","Cemaziyelahir","Recep",
@@ -128,7 +134,7 @@ AYLAR = [
 ]
 
 # =========================
-# ANCHOR (2025 HAC)
+# ANCHOR
 # =========================
 ANCHOR = datetime(2025, 5, 29).date()
 
@@ -138,37 +144,81 @@ ANCHOR_INDEX = min(
 )
 
 # =========================
+# HİCRİ BUL
+# =========================
+def get_hijri(date):
+
+    idx = None
+
+    for i, m in enumerate(MONTHS):
+        if m <= date:
+            idx = i
+
+    if idx is None:
+        return None
+
+    start = MONTHS[idx]
+
+    gun = (date - start).days + 1
+    ay = (idx - ANCHOR_INDEX + 11) % 12
+    yil = 1447 + ((idx - ANCHOR_INDEX) // 12)
+
+    return gun, AYLAR[ay], yil, idx
+
+# =========================
 # BUGÜN
 # =========================
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     today = datetime.now(timezone.utc).date()
 
-    idx = None
+    h = get_hijri(today)
 
-    for i, m in enumerate(MONTHS):
-        if m <= today:
-            idx = i
-
-    if idx is None:
+    if not h:
         await update.message.reply_text("Hata")
         return
 
-    start = MONTHS[idx]
-
-    gun = (today - start).days + 1
-    ay = (idx - ANCHOR_INDEX + 11) % 12
+    gun, ay, yil, _ = h
 
     await update.message.reply_text(
-        f"📅 Bugün\n\nMiladi: {today}\nHicri: {gun} {AYLAR[ay]}"
+        f"📅 Bugün\n\nMiladi: {today}\nHicri: {gun} {ay} {yil}"
     )
 
 # =========================
-# TEST (26 YIL)
+# YIL ANALİZ
+# =========================
+async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    try:
+        year = int(context.args[0])
+    except:
+        await update.message.reply_text("Kullanım: /yil 2026")
+        return
+
+    text = f"📅 {year} ANALİZ\n\n"
+
+    for i, m in enumerate(MONTHS):
+
+        if m.year == year:
+
+            ay = (i - ANCHOR_INDEX + 11) % 12
+            ay_adi = AYLAR[ay]
+
+            if ay_adi == "Ramazan":
+                text += f"🌙 Ramazan: {m}\n"
+                text += f"🎉 Bayram: {m + timedelta(days=29)}\n\n"
+
+            if ay_adi == "Zilhicce":
+                text += f"🐑 Arefe: {m + timedelta(days=8)}\n"
+                text += f"🐑 Bayram: {m + timedelta(days=9)}\n\n"
+
+    await update.message.reply_text(text)
+
+# =========================
+# TEST
 # =========================
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # senin veri (örnek Ramazanlar)
     real = {
         2025: "2025-03-01",
         2024: "2024-03-11",
@@ -203,8 +253,10 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 HYBRID FINAL\n\n"
-        "/bugun\n/test"
+        "🚀 SELF LEARNING HİCRİ\n\n"
+        "/bugun\n"
+        "/yil 2026\n"
+        "/test"
     )
 
 # =========================
@@ -214,7 +266,8 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
+app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 
-print("🚀 HYBRID FINAL AKTİF")
+print("🚀 SELF LEARNING AKTİF")
 app.run_polling()
