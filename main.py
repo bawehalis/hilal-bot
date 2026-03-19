@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-from skyfield.api import load
+from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
 TOKEN = os.getenv("TOKEN")
@@ -16,6 +16,10 @@ logging.basicConfig(level=logging.INFO)
 # =========================
 ts = load.timescale()
 eph = load('de421.bsp')
+
+earth = eph['earth']
+moon = eph['moon']
+sun = eph['sun']
 
 # =========================
 # NEW MOONS
@@ -35,12 +39,47 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# AY BAŞLANGIÇLARI
+# HİLAL GÖRÜNÜRLÜK
 # =========================
-MONTHS = sorted([
-    (nm + timedelta(days=1)).date()
-    for nm in NEW_MOONS
-])
+def hilal_visible(date, nm):
+
+    t = ts.utc(date.year, date.month, date.day, 18)
+
+    loc = earth + Topos(21.4,39.8)
+
+    e = loc.at(t)
+    m = e.observe(moon).apparent()
+    s = e.observe(sun).apparent()
+
+    alt, _, _ = m.altaz()
+    elong = m.separation_from(s).degrees
+
+    age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
+
+    return alt.degrees > 5 and elong > 8 and age > 12
+
+# =========================
+# AY BAŞLANGIÇ
+# =========================
+def get_month_starts():
+
+    starts = []
+
+    for nm in NEW_MOONS:
+
+        for i in [1,2,3]:
+
+            d = (nm + timedelta(days=i)).date()
+
+            if hilal_visible(d, nm):
+                starts.append(d)
+                break
+        else:
+            starts.append((nm + timedelta(days=2)).date())
+
+    return sorted(starts)
+
+MONTHS = get_month_starts()
 
 # =========================
 # AY İSİMLERİ
@@ -52,9 +91,9 @@ AYLAR = [
 ]
 
 # =========================
-# ANCHOR (KRİTİK)
+# ANCHOR (SADECE 1 NOKTA)
 # =========================
-ANCHOR_DATE = datetime(2025,3,1).date()  # 1 Ramazan
+ANCHOR_DATE = datetime(2025,3,1).date()
 
 ANCHOR_INDEX = min(range(len(MONTHS)),
                    key=lambda i: abs((MONTHS[i]-ANCHOR_DATE).days))
@@ -70,21 +109,22 @@ def get_hijri(date):
         if m <= date:
             idx = i
 
-    if idx is None:
-        return 0,"?"
-
     diff = idx - ANCHOR_INDEX
-    ay = (8 + diff) % 12
 
+    ay = (8 + diff) % 12
     start = MONTHS[idx]
+
     gun = (date - start).days + 1
 
     return gun, AYLAR[ay]
 
 # =========================
-# RAMAZAN BUL
+# YIL ANALİZ
 # =========================
-def get_ramadan(year):
+def analyze_year(year):
+
+    ramazan = None
+    zilhicce = None
 
     for i,m in enumerate(MONTHS):
 
@@ -92,67 +132,40 @@ def get_ramadan(year):
         ay = (8 + diff) % 12
 
         if ay == 8 and m.year == year:
-            return m
+            ramazan = m
+
+        if ay == 11 and m.year == year:
+            zilhicce = m
+
+    return {
+        "ramazan": ramazan,
+        "bayram": ramazan + timedelta(days=29),
+        "arefe": zilhicce + timedelta(days=8),
+        "kurban": zilhicce + timedelta(days=9)
+    }
 
 # =========================
-# TEST (25 YIL)
-# =========================
-REAL = {
-    2000:"2000-11-27",2001:"2001-11-17",2002:"2002-11-06",
-    2003:"2003-10-27",2004:"2004-10-16",2005:"2005-10-05",
-    2006:"2006-09-24",2007:"2007-09-13",2008:"2008-09-01",
-    2009:"2009-08-22",2010:"2010-08-11",2011:"2011-08-01",
-    2012:"2012-07-21",2013:"2013-07-10",2014:"2014-06-29",
-    2015:"2015-06-18",2016:"2016-06-06",2017:"2017-05-27",
-    2018:"2018-05-17",2019:"2019-05-06",2020:"2020-04-24",
-    2021:"2021-04-13",2022:"2022-04-02",2023:"2023-03-23",
-    2024:"2024-03-11",2025:"2025-03-01",
-}
-
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    text = "📊 TEST (25 YIL)\n\n"
-    ok = 0
-    total = 0
-
-    for y, real in REAL.items():
-
-        real_d = datetime.fromisoformat(real).date()
-        model = get_ramadan(y)
-
-        diff = (model - real_d).days
-
-        if diff == 0:
-            text += f"{y}: 0 🔥\n"
-            ok += 1
-        else:
-            text += f"{y}: {diff} ❗\n"
-            total += abs(diff)
-
-    text += f"\n🎯 {ok}/26 doğru"
-    text += f"\n📉 hata: {total}"
-
-    await update.message.reply_text(text)
-
-# =========================
-# BUGÜN
+# BOT
 # =========================
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     today = datetime.now(timezone.utc).date()
     g,a = get_hijri(today)
 
-    await update.message.reply_text(
-        f"📅 Bugün\n\nMiladi: {today}\nHicri: {g} {a}"
-    )
+    await update.message.reply_text(f"📅 {today}\nHicri: {g} {a}")
 
-# =========================
-# APP
-# =========================
+async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    y = int(context.args[0])
+    d = analyze_year(y)
+
+    text = f"{y}\nRamazan: {d['ramazan']}\nBayram: {d['bayram']}\nArefe: {d['arefe']}"
+    await update.message.reply_text(text)
+
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("test", test))
+app.add_handler(CommandHandler("yil", yil))
 
-print("🚀 DOĞRU SİSTEM AKTİF")
+print("🚀 GERÇEK HİLAL MOTOR AKTİF")
 app.run_polling()
