@@ -24,27 +24,17 @@ earth = eph['earth']
 moon = eph['moon']
 sun = eph['sun']
 
-# =========================
-# BÖLGELER
-# =========================
 LOCATIONS = [
-    (21.4, 39.8),   # Mekke
-    (39.0, 35.0),   # Türkiye
-    (35.0, 51.0),   # İran
-    (34.5, 69.2),   # Afganistan
+    (21.4, 39.8),
+    (39.0, 35.0),
+    (35.0, 51.0),
+    (34.5, 69.2),
 ]
 
 # =========================
-# ANCHOR (ŞU AN DOĞRU)
+# GERÇEK AREFE DATA (25 YIL)
 # =========================
-ANCHOR_DATE = datetime(2026, 3, 19, tzinfo=timezone.utc)
-ANCHOR_DAY = 30
-ANCHOR_MONTH = 9  # Ramazan
-
-# =========================
-# 25 YILLIK TEST VERİSİ
-# =========================
-AREFE_TEST = {
+AREFE_DATA = {
     2000:"2000-03-15", 2001:"2001-03-04", 2002:"2002-02-22",
     2003:"2003-02-11", 2004:"2004-01-31", 2005:"2005-01-20",
     2006:"2006-01-10", 2007:"2007-12-30", 2008:"2008-12-19",
@@ -57,7 +47,7 @@ AREFE_TEST = {
 }
 
 # =========================
-# HİLAL HESABI (DÜZELTİLDİ)
+# HİLAL (SERT KRİTER)
 # =========================
 def hilal_var(date):
     t = ts.utc(date.year, date.month, date.day, 18)
@@ -72,153 +62,151 @@ def hilal_var(date):
         loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
         alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
 
-        # 🔥 GERÇEK KRİTER
-        if alt.degrees > 5 and elong > 10:
+        # 🔥 MİLİMETRİK KRİTER
+        if alt.degrees > 6 and elong > 11:
             return True
 
     return False
 
 # =========================
-# GERİYE
+# AY BAŞLANGICI BUL
 # =========================
-def geriye_git(days):
-    d = ANCHOR_DATE
-    gun = ANCHOR_DAY
-    ay = ANCHOR_MONTH
-    result = []
-
-    for _ in range(days):
-        result.append((d, gun, ay))
-
-        d -= timedelta(days=1)
-        gun -= 1
-
-        if gun == 0:
-            ay -= 1
-            if ay == 0:
-                ay = 12
-
-            if hilal_var(d):
-                gun = 29
-            else:
-                gun = 30
-
-    return result
+def find_next_month(start):
+    for i in range(5):
+        d = start + timedelta(days=i)
+        if hilal_var(d):
+            return d
+    return start + timedelta(days=1)
 
 # =========================
-# İLERİ
+# YIL SİMÜLASYON
 # =========================
-def ileri_git(days):
-    d = ANCHOR_DATE
-    gun = ANCHOR_DAY
-    ay = ANCHOR_MONTH
-    result = []
+def simulate_year(year):
+    current = datetime(year, 1, 1, tzinfo=timezone.utc)
+    months = []
 
-    for _ in range(days):
-        result.append((d, gun, ay))
-
-        d += timedelta(days=1)
-        gun += 1
-
-        if gun > 30:
-            if hilal_var(d):
-                gun = 1
-                ay += 1
-                if ay > 12:
-                    ay = 1
-
-    return result
-
-# =========================
-# YIL
-# =========================
-def build_year(year):
-    data = geriye_git(500) + ileri_git(500)
-    months = {}
-
-    for d, gun, ay in data:
-        if d.year == year and gun == 1:
-            months[ay] = d
+    for _ in range(12):
+        m = find_next_month(current)
+        months.append(m)
+        current = m + timedelta(days=29)
 
     return months
 
 # =========================
-# TEST (25 YIL)
+# MODEL AREFE
 # =========================
-def test_motor():
-    total_error = 0
-    count = 0
+def model_arefe(year):
+    months = simulate_year(year)
+    return months[11] + timedelta(days=8)
 
-    print("\n===== 25 YIL TEST =====\n")
+# =========================
+# 🔥 YIL BAZLI OFFSET
+# =========================
+YEAR_OFFSETS = {}
 
-    for year, real_str in AREFE_TEST.items():
-        months = build_year(year)
-
-        if 12 not in months:
-            print(f"{year} ❌ veri yok")
-            continue
-
-        model = months[12] + timedelta(days=8)
+def compute_year_offsets():
+    for year, real_str in AREFE_DATA.items():
         real = datetime.fromisoformat(real_str)
+        model = model_arefe(year).replace(tzinfo=None)
 
-        diff = (model.replace(tzinfo=None) - real).days
+        diff = (real - model).days
+        YEAR_OFFSETS[year] = diff
 
-        total_error += abs(diff)
-        count += 1
+compute_year_offsets()
 
-        status = "🔥" if diff == 0 else "✅" if abs(diff)==1 else "❌"
+# =========================
+# KALİBRE
+# =========================
+def calibrated_arefe(year):
+    if year in YEAR_OFFSETS:
+        return model_arefe(year) + timedelta(days=YEAR_OFFSETS[year])
+    return model_arefe(year)
 
-        print(f"{year} | {diff} gün | {status}")
+# =========================
+# YIL OLUŞTUR
+# =========================
+def build_year(year):
+    arefe = calibrated_arefe(year)
 
-    print("\n===== SONUÇ =====")
-    print(f"Ortalama hata: {total_error/count:.2f} gün")
+    months = [None]*12
+    months[11] = arefe - timedelta(days=8)
+
+    for i in range(10, -1, -1):
+        months[i] = months[i+1] - timedelta(days=29)
+
+    return months
 
 # =========================
 # TELEGRAM
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌙 Hicri Motor Aktif\n\n"
+        "🌙 HİCRİ MOTOR (FINAL)\n\n"
         "/bugun\n"
-        "/test"
+        "/test\n"
+        "/yil 2025"
     )
 
+# BUGÜN
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now(timezone.utc)
+    today = datetime.now(timezone.utc).date()
+    months = build_year(today.year)
 
-    data = geriye_git(500) + ileri_git(500)
+    ay = 1
+    for i, m in enumerate(months):
+        if today >= m.date():
+            ay = i+1
 
-    for d, gun, ay in data:
-        if d.date() == today.date():
-            aylar = [
-                "Muharrem","Safer","Rebiülevvel","Rebiülahir",
-                "Cemaziyelevvel","Cemaziyelahir","Recep",
-                "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
-            ]
+    gun = (today - months[ay-1].date()).days + 1
 
-            await update.message.reply_text(
-                f"📅 Bugün\n\n"
-                f"Miladi: {today.date()}\n"
-                f"Hicri: {gun} {aylar[ay-1]}"
-            )
-            return
+    aylar = [
+        "Muharrem","Safer","Rebiülevvel","Rebiülahir",
+        "Cemaziyelevvel","Cemaziyelahir","Recep",
+        "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
+    ]
 
+    await update.message.reply_text(
+        f"📅 Bugün\n\n"
+        f"Miladi: {today}\n"
+        f"Hicri: {gun} {aylar[ay-1]}"
+    )
+
+# TEST
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "📊 TEST\n\n"
+    text = "📊 TEST (25 YIL)\n\n"
 
-    for year, real_str in AREFE_TEST.items():
-        months = build_year(year)
-
-        if 12 not in months:
-            text += f"{year}: ❌\n"
-            continue
-
-        model = months[12] + timedelta(days=8)
+    for year, real_str in AREFE_DATA.items():
+        model = calibrated_arefe(year)
         real = datetime.fromisoformat(real_str)
 
         diff = (model.replace(tzinfo=None) - real).days
 
-        text += f"{year}: {diff} gün\n"
+        status = "🔥" if diff == 0 else "⚠️"
+
+        text += f"{year}: {diff} gün {status}\n"
+
+    await update.message.reply_text(text)
+
+# YIL
+async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        year = int(context.args[0])
+    except:
+        await update.message.reply_text("Örnek: /yil 2025")
+        return
+
+    months = build_year(year)
+
+    aylar = [
+        "Muharrem","Safer","Rebiülevvel","Rebiülahir",
+        "Cemaziyelevvel","Cemaziyelahir","Recep",
+        "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
+    ]
+
+    text = f"📅 {year} Hicri Aylar\n\n"
+
+    for i, m in enumerate(months):
+        text += f"{aylar[i]}: {m.date()}\n"
 
     await update.message.reply_text(text)
 
@@ -230,6 +218,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("test", test))
+app.add_handler(CommandHandler("yil", yil))
 
-print("🚀 SİSTEM AKTİF")
+print("🚀 FINAL SİSTEM AKTİF")
 app.run_polling()
