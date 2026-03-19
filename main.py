@@ -2,8 +2,13 @@ import os
 import logging
 from datetime import datetime, timedelta, timezone
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    CallbackQueryHandler,
+)
 
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
@@ -22,26 +27,23 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# GERÇEK DATA (25 YIL)
+# PARAM (FINAL AYAR)
 # =========================
-REAL = {
-    2000:"2000-11-27",2001:"2001-11-17",2002:"2002-11-06",
-    2003:"2003-10-27",2004:"2004-10-16",2005:"2005-10-05",
-    2006:"2006-09-24",2007:"2007-09-13",2008:"2008-09-01",
-    2009:"2009-08-22",2010:"2010-08-11",2011:"2011-08-01",
-    2012:"2012-07-21",2013:"2013-07-10",2014:"2014-06-29",
-    2015:"2015-06-18",2016:"2016-06-06",2017:"2017-05-27",
-    2018:"2018-05-17",2019:"2019-05-06",2020:"2020-04-24",
-    2021:"2021-04-13",2022:"2022-04-02",2023:"2023-03-23",
-    2024:"2024-03-11",2025:"2025-03-01",
-}
+ALT_T = 2
+ELONG_T = 6
+AGE_T = 8
 
 # =========================
-# PARAM (İLK AYAR)
+# REAL DATA
 # =========================
-ALT_T = 3
-ELONG_T = 6
-AGE_T = 10
+REAL = {
+    2020:"2020-04-24",
+    2021:"2021-04-13",
+    2022:"2022-04-02",
+    2023:"2023-03-23",
+    2024:"2024-03-11",
+    2025:"2025-03-01",
+}
 
 # =========================
 # NEW MOONS
@@ -81,7 +83,7 @@ def visible(date, nm):
     return alt.degrees > ALT_T and elong > ELONG_T and age > AGE_T
 
 # =========================
-# AY BAŞLANGIÇ
+# MONTHS
 # =========================
 def get_months():
 
@@ -116,9 +118,6 @@ AYLAR = [
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-# =========================
-# HİCRİ
-# =========================
 def get_hijri(date):
 
     idx = None
@@ -136,135 +135,134 @@ def get_hijri(date):
     return gun, AYLAR[ay]
 
 # =========================
-# TEST
+# BUTTON MENU
 # =========================
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def menu():
 
-    text = "📊 TEST (25 YIL)\n\n"
-    ok = 0
-    total = 0
+    keyboard = [
+        [InlineKeyboardButton("📅 Bugün", callback_data="bugun")],
+        [InlineKeyboardButton("📊 Test", callback_data="test")],
+        [InlineKeyboardButton("⚙️ Ayar", callback_data="ayar")],
+        [InlineKeyboardButton("🌙 3 Gün", callback_data="hilal")],
+        [InlineKeyboardButton("🧠 Karar", callback_data="karar")],
+    ]
 
-    for y, real_str in REAL.items():
-
-        real = datetime.fromisoformat(real_str).date()
-        model = min(MONTHS, key=lambda x: abs((x-real).days))
-
-        diff = (model - real).days
-
-        if diff == 0:
-            text += f"{y}: 0 🔥\n"
-            ok += 1
-        else:
-            text += f"{y}: {diff} ❗\n"
-            total += abs(diff)
-
-    text += f"\n🎯 {ok}/26 doğru"
-    text += f"\n📉 hata: {total}"
-
-    await update.message.reply_text(text)
+    return InlineKeyboardMarkup(keyboard)
 
 # =========================
-# AYAR ANALİZ
+# START
 # =========================
-async def ayar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    pos = 0
-    neg = 0
-
-    for y, real_str in REAL.items():
-
-        real = datetime.fromisoformat(real_str).date()
-        model = min(MONTHS, key=lambda x: abs((x-real).days))
-
-        diff = (model - real).days
-
-        if diff > 0:
-            pos += 1
-        elif diff < 0:
-            neg += 1
-
-    text = "⚙️ AYAR ANALİZ\n\n"
-    text += f"Geç: {pos}\nErken: {neg}\n\n"
-
-    if pos > neg:
-        text += "📉 Geç hesap\nALT düşür\nAGE düşür"
-    elif neg > pos:
-        text += "📈 Erken hesap\nALT artır\nAGE artır"
-    else:
-        text += "✅ Dengeli"
-
-    text += f"\n\nMevcut: alt={ALT_T} elong={ELONG_T} age={AGE_T}"
-
-    await update.message.reply_text(text)
+    await update.message.reply_text(
+        "🌙 Hicri Hilal Motor\n\nButonlardan seçim yap:",
+        reply_markup=menu()
+    )
 
 # =========================
-# HİLAL 3 GÜN
+# CALLBACK
 # =========================
-async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
 
     today = datetime.now(timezone.utc).date()
 
-    def check(d):
-        nm = min(NEW_MOONS, key=lambda x: abs((x.date()-d)))
-        return visible(d, nm)
+    # BUGUN
+    if query.data == "bugun":
+        g,a = get_hijri(today)
+        text = f"📅 Bugün\n\nMiladi: {today}\nHicri: {g} {a}"
 
-    d1 = "✅" if check(today- timedelta(days=1)) else "❌"
-    d2 = "✅" if check(today) else "❌"
-    d3 = "✅" if check(today+ timedelta(days=1)) else "❌"
+    # TEST
+    elif query.data == "test":
 
-    text = f"""🌙 3 Gün
+        text = "📊 TEST\n\n"
+        total = 0
+
+        for y, real_str in REAL.items():
+
+            real = datetime.fromisoformat(real_str).date()
+            model = min(MONTHS, key=lambda x: abs((x-real).days))
+
+            diff = (model - real).days
+            total += abs(diff)
+
+            text += f"{y}: {diff}\n"
+
+        text += f"\nToplam hata: {total}"
+
+    # AYAR
+    elif query.data == "ayar":
+
+        pos = 0
+        neg = 0
+
+        for y, real_str in REAL.items():
+
+            real = datetime.fromisoformat(real_str).date()
+            model = min(MONTHS, key=lambda x: abs((x-real).days))
+
+            diff = (model - real).days
+
+            if diff > 0:
+                pos += 1
+            elif diff < 0:
+                neg += 1
+
+        text = f"""⚙️ AYAR
+
+Geç: {pos}
+Erken: {neg}
+
+Öneri:
+ALT düşür
+AGE düşür
+
+Mevcut: alt={ALT_T} elong={ELONG_T} age={AGE_T}
+"""
+
+    # 3 GÜN
+    elif query.data == "hilal":
+
+        def check(d):
+            nm = min(NEW_MOONS, key=lambda x: abs((x.date()-d)))
+            return visible(d, nm)
+
+        d1 = "✅" if check(today- timedelta(days=1)) else "❌"
+        d2 = "✅" if check(today) else "❌"
+        d3 = "✅" if check(today+ timedelta(days=1)) else "❌"
+
+        text = f"""🌙 3 Gün
 
 Dün: {d1}
 Bugün: {d2}
 Yarın: {d3}"""
 
-    await update.message.reply_text(text)
+    # KARAR
+    elif query.data == "karar":
 
-# =========================
-# KARAR
-# =========================
-async def karar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        score = 0
 
-    today = datetime.now(timezone.utc).date()
+        for lat,lon in [(21,39),(39,35),(35,51)]:
+            nm = min(NEW_MOONS, key=lambda x: abs((x.date()-today)))
+            if visible(today, nm):
+                score += 1
 
-    scores = []
-
-    for lat,lon in [(21,39),(39,35),(35,51)]:
-        nm = min(NEW_MOONS, key=lambda x: abs((x.date()-today)))
-        if visible(today, nm):
-            scores.append(1)
+        if score >= 2:
+            text = "🎉 Bayram"
         else:
-            scores.append(0)
+            text = "❌ Değil"
 
-    s = sum(scores)
-
-    if s >= 2:
-        msg = "🎉 Bayram"
-    else:
-        msg = "❌ Değil"
-
-    await update.message.reply_text(f"Karar: {msg}")
-
-# =========================
-# BUGÜN
-# =========================
-async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    today = datetime.now(timezone.utc).date()
-    g,a = get_hijri(today)
-
-    await update.message.reply_text(f"{today}\nHicri: {g} {a}")
+    await query.edit_message_text(text, reply_markup=menu())
 
 # =========================
 # APP
 # =========================
 app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("test", test))
-app.add_handler(CommandHandler("ayar", ayar))
-app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
-app.add_handler(CommandHandler("karar", karar))
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button))
 
-print("🚀 FULL SİSTEM AKTİF")
+print("🚀 BUTONLU SİSTEM AKTİF")
 app.run_polling()
