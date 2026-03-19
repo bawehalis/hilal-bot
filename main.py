@@ -1,58 +1,66 @@
-import os
+import logging
 from datetime import datetime, timezone
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import math
 
+import ephem
+from astral import LocationInfo
+from astral.sun import sun
+
+# 🔐 TOKEN Railway'den geliyor
+import os
 TOKEN = os.getenv("TOKEN")
 
-# 🌙 Ay yaşı hesap (NASA approx)
-def moon_age(date):
-    diff = date - datetime(2001, 1, 1, tzinfo=timezone.utc)
-    days = diff.total_seconds() / 86400
-    lunations = 0.20439731 + (days * 0.03386319269)
-    return (lunations % 1) * 29.53
+logging.basicConfig(level=logging.INFO)
 
-# 🌙 Hicri dönüşüm (daha iyi approx)
-def gregorian_to_hijri(date):
-    jd = int((date - datetime(622, 7, 16, tzinfo=timezone.utc)).days)
-    h_year = int((30 * jd + 10646) / 10631)
-    h_month = min(12, math.ceil((jd - 29 - hijri_to_jd(h_year, 1, 1)) / 29.5) + 1)
-    h_day = jd - hijri_to_jd(h_year, h_month, 1) + 1
-    return h_year, h_month, h_day
+# 🌙 AY YAŞI HESABI (basit ama yeterli)
+def moon_age(now):
+    new_moon = datetime(2024, 1, 11, tzinfo=timezone.utc)
+    diff = now - new_moon
+    return (diff.total_seconds() / 86400) % 29.53
 
-def hijri_to_jd(year, month, day):
-    return int((year - 1) * 354 + (3 + (11 * year)) / 30 + 29.5 * (month - 1) + day)
-
+# 📅 HİCRİ (basit model)
 months = [
     "Muharrem","Safer","Rebiülevvel","Rebiülahir",
     "Cemaziyelevvel","Cemaziyelahir","Recep","Şaban",
     "Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
+def gregorian_to_hijri(now):
+    base = datetime(2024, 7, 7, tzinfo=timezone.utc)
+    days = (now - base).days
+    hy = 1446 + days // 354
+    hm = ((days % 354) // 29) + 1
+    hd = ((days % 354) % 29) + 1
+    return hy, hm, hd
+
 # 🚀 START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    mesaj = (
         "🌙 Hilal Takvim Bot PRO\n\n"
-        "/bugun → Bugün durumu\n"
-        "/hilal → Hilal görünür mü?\n"
+        "/bugun → Günlük durum\n"
+        "/hilal → Hilal analizi\n"
+        "/dunya → Global rapor\n"
+        "/konum izmir → Şehre göre hilal\n"
         "/arefe → Arefe mi?\n"
-        "/ramazan → Ramazan durumu"
+        "/ramazan → Ramazan bilgisi"
     )
+    await update.message.reply_text(mesaj)
 
 # 📅 BUGÜN
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone.utc)
     hy, hm, hd = gregorian_to_hijri(now)
 
-    mesaj = f"📅 Bugün:\n\n"
+    mesaj = f"📅 BUGÜN\n\n"
     mesaj += f"Miladi: {now.date()}\n"
     mesaj += f"Hicri: {hd} {months[hm-1]} {hy}\n\n"
 
     if hm == 12 and hd == 9:
-        mesaj += "🕋 AREFE GÜNÜ"
+        mesaj += "🕋 Arefe günü\n"
     elif hm == 9:
-        mesaj += "🌙 Ramazan"
+        mesaj += "🌙 Ramazan\n"
     else:
         mesaj += "Normal gün"
 
@@ -63,16 +71,94 @@ async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone.utc)
     age = moon_age(now)
 
-    mesaj = f"🌙 Ay yaşı: {age:.2f} gün\n\n"
+    mesaj = f"🌙 HİLAL\n\n"
+    mesaj += f"Ay yaşı: {age:.2f} gün\n\n"
 
     if age < 1:
-        mesaj += "❌ Hilal görünmez"
-    elif 1 <= age < 2:
-        mesaj += "⚠️ Zor görülebilir"
+        mesaj += "❌ Görünmez"
+    elif age < 1.5:
+        mesaj += "⚠️ Çok zor"
+    elif age < 2:
+        mesaj += "⚠️ Zor"
     else:
-        mesaj += "✅ Hilal büyük ihtimalle görülebilir"
+        mesaj += "✅ Görülebilir"
 
     await update.message.reply_text(mesaj)
+
+# 🌍 DÜNYA
+async def dunya(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(timezone.utc)
+    age = moon_age(now)
+
+    mesaj = "🌍 GLOBAL RAPOR\n\n"
+
+    def durum(a):
+        if a < 1:
+            return "❌"
+        elif a < 2:
+            return "⚠️"
+        else:
+            return "✅"
+
+    mesaj += f"Türkiye: {durum(age-0.3)}\n"
+    mesaj += f"Suudi: {durum(age)}\n"
+    mesaj += f"İran: {durum(age-0.2)}\n"
+    mesaj += f"Afganistan: {durum(age-0.4)}\n"
+    mesaj += f"Afrika: {durum(age+0.5)}\n"
+    mesaj += f"Amerika: {durum(age+1)}\n"
+
+    await update.message.reply_text(mesaj)
+
+# 🌍 KONUM (PRO)
+async def konum(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        sehir = " ".join(context.args)
+
+        cities = {
+            "izmir": (38.42, 27.14),
+            "istanbul": (41.01, 28.97),
+            "mekke": (21.39, 39.86),
+            "riyad": (24.71, 46.67),
+            "tahran": (35.68, 51.41),
+            "kabil": (34.55, 69.21),
+        }
+
+        if sehir.lower() not in cities:
+            await update.message.reply_text("❌ Şehir yok\nÖrnek: /konum izmir")
+            return
+
+        lat, lon = cities[sehir.lower()]
+
+        loc = LocationInfo(latitude=lat, longitude=lon)
+        s = sun(loc.observer, date=datetime.utcnow())
+
+        sunset = s["sunset"]
+
+        obs = ephem.Observer()
+        obs.lat = str(lat)
+        obs.lon = str(lon)
+        obs.date = sunset
+
+        moon = ephem.Moon(obs)
+        altitude = moon.alt * 180 / 3.1416
+
+        mesaj = f"🌍 {sehir.upper()}\n\n"
+        mesaj += f"Gün batımı: {sunset.strftime('%H:%M')}\n"
+        mesaj += f"Ay yüksekliği: {altitude:.2f}°\n\n"
+
+        if altitude < 0:
+            mesaj += "❌ Görünmez"
+        elif altitude < 5:
+            mesaj += "⚠️ Çok zor"
+        elif altitude < 10:
+            mesaj += "⚠️ Zor"
+        else:
+            mesaj += "✅ Görülebilir"
+
+        await update.message.reply_text(mesaj)
+
+    except:
+        await update.message.reply_text("Hata: /konum izmir")
 
 # 🕋 AREFE
 async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -80,7 +166,7 @@ async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hy, hm, hd = gregorian_to_hijri(now)
 
     if hm == 12 and hd == 9:
-        await update.message.reply_text("✅ Bugün Arefe")
+        await update.message.reply_text("🕋 Bugün arefe")
     else:
         await update.message.reply_text("❌ Bugün arefe değil")
 
@@ -94,12 +180,14 @@ async def ramazan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Ramazan değil")
 
-# 🚀 APP
+# 🚀 MAIN
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("hilal", hilal))
+app.add_handler(CommandHandler("dunya", dunya))
+app.add_handler(CommandHandler("konum", konum))
 app.add_handler(CommandHandler("arefe", arefe))
 app.add_handler(CommandHandler("ramazan", ramazan))
 
