@@ -2,3 +2,4 @@ python-telegram-bot==20.3
 astral==3.2
 skyfield
 numpy
+hijri-converter
