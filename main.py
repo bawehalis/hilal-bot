@@ -11,6 +11,9 @@ from skyfield.almanac import find_discrete, moon_phases
 TOKEN = os.getenv("TOKEN")
 logging.basicConfig(level=logging.INFO)
 
+# =========================
+# SKYFIELD
+# =========================
 ts = load.timescale()
 eph = load('de421.bsp')
 
@@ -34,7 +37,7 @@ REAL = {
 }
 
 # =========================
-# NEW MOON
+# NEW MOONS
 # =========================
 def get_new_moons():
     t0 = ts.utc(1995,1,1)
@@ -51,7 +54,7 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL
+# HİLAL KONTROL
 # =========================
 def hilal_visible(date, nm, alt_limit, elong_limit):
 
@@ -75,7 +78,6 @@ def hilal_visible(date, nm, alt_limit, elong_limit):
 def get_ramadan(year, alt_limit, elong_limit, shift):
 
     target = datetime(year,3,15,tzinfo=timezone.utc)
-
     nm = min(NEW_MOONS, key=lambda x: abs(x-target))
 
     for i in [1,2,3]:
@@ -87,15 +89,19 @@ def get_ramadan(year, alt_limit, elong_limit, shift):
     return (nm + timedelta(days=2)).date()
 
 # =========================
-# OPTİMİZASYON
+# OPTIMIZER (FIXLENMİŞ)
 # =========================
 def optimize():
 
     best = (0,0,0,999)
 
-    for alt in [3,4,5,6]:
-        for elong in [6,7,8,9]:
+    for alt in [4,5,6,7]:
+        for elong in [7,8,9,10]:
             for shift in [-1,0,1]:
+
+                # saçma kombinasyonları engelle
+                if alt < 4 or elong < 7:
+                    continue
 
                 error = 0
 
@@ -114,7 +120,7 @@ def optimize():
 ALT, ELONG, SHIFT, ERR = optimize()
 
 # =========================
-# TEST
+# TEST 25 YIL
 # =========================
 async def test25(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -157,10 +163,21 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
+# START
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🚀 FINAL OPTIMIZED\n\n"
+        "/bugun\n"
+        "/test25"
+    )
+
+# =========================
 # APP
 # =========================
 app = ApplicationBuilder().token(TOKEN).build()
 
+app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("test25", test25))
 
