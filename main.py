@@ -15,7 +15,7 @@ TOKEN = os.getenv("TOKEN")
 logging.basicConfig(level=logging.INFO)
 
 # =========================
-# ASTRONOMİ
+# ASTRONOMİ YÜKLE
 # =========================
 ts = load.timescale()
 eph = load('de421.bsp')
@@ -25,7 +25,16 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# NEW MOON
+# AY İSİMLERİ
+# =========================
+AYLAR = [
+    "Muharrem","Safer","Rebiülevvel","Rebiülahir",
+    "Cemaziyelevvel","Cemaziyelahir","Recep",
+    "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
+]
+
+# =========================
+# NEW MOON LİSTESİ
 # =========================
 def get_new_moons(start=1995, end=2035):
     t0 = ts.utc(start, 1, 1)
@@ -40,62 +49,9 @@ def get_new_moons(start=1995, end=2035):
     ]
 
 # =========================
-# HİLAL GÖRÜNÜRLÜK
+# HİLAL PARAMETRELERİ
 # =========================
-def hilal_visible(date):
-    t = ts.utc(date.year, date.month, date.day, 18)
-
-    e = earth.at(t)
-    m = e.observe(moon).apparent()
-    s = e.observe(sun).apparent()
-
-    elong = m.separation_from(s).degrees
-
-    loc = earth + Topos(21.4, 39.8)
-    alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
-
-    return alt.degrees > 5 and elong > 10
-
-# =========================
-# AY BAŞLANGIÇLARI
-# =========================
-def build_months():
-    new_moons = get_new_moons()
-    months = []
-
-    for nm in new_moons:
-        d1 = (nm + timedelta(days=1)).date()
-        d2 = (nm + timedelta(days=2)).date()
-
-        if hilal_visible(d1):
-            months.append(d1)
-        else:
-            months.append(d2)
-
-    return sorted(months)
-
-MONTHS = build_months()
-
-AYLAR = [
-    "Muharrem","Safer","Rebiülevvel","Rebiülahir",
-    "Cemaziyelevvel","Cemaziyelahir","Recep",
-    "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
-]
-
-# =========================
-# ANCHOR (ZİLHİCCE FIX)
-# =========================
-ANCHOR_TARGET = datetime(2025, 5, 28).date()
-
-ANCHOR_INDEX = min(
-    range(len(MONTHS)),
-    key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days)
-)
-
-# =========================
-# HİLAL SAAT FONKSİYONU
-# =========================
-def hilal_kontrol_saat(date, lat, lon, hour):
+def hilal_param(date, lat=21.4, lon=39.8, hour=18):
     t = ts.utc(date.year, date.month, date.day, hour)
 
     loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
@@ -110,17 +66,71 @@ def hilal_kontrol_saat(date, lat, lon, hour):
     return alt.degrees, elong
 
 # =========================
+# ULTIMATE SCORE (KALİBRE)
+# =========================
+def hilal_score(date, new_moon_dt):
+    alt, elong = hilal_param(date)
+
+    # Ay yaşı (saat)
+    moon_age = (datetime(date.year, date.month, date.day, tzinfo=timezone.utc) - new_moon_dt).total_seconds() / 3600
+
+    # 🔥 KALİBRE EDİLMİŞ AĞIRLIKLAR
+    score = (alt * 0.5) + (elong * 0.3) + (moon_age * 0.2)
+
+    return score, alt, elong, moon_age
+
+# =========================
+# AY BAŞLANGIÇLARI (ULTIMATE)
+# =========================
+def build_months():
+    new_moons = get_new_moons()
+    months = []
+
+    for nm in new_moons:
+        d1 = (nm + timedelta(days=1)).date()
+        d2 = (nm + timedelta(days=2)).date()
+
+        score, alt, elong, age = hilal_score(d1, nm)
+
+        # 🔥 KARAR EŞİĞİ (DATADAN KALİBRE)
+        if score > 7:
+            months.append(d1)
+        else:
+            months.append(d2)
+
+    return sorted(months)
+
+MONTHS = build_months()
+
+# =========================
+# ANCHOR (ZİLHİCCE 2025)
+# =========================
+ANCHOR_TARGET = datetime(2025, 5, 29).date()
+
+ANCHOR_INDEX = min(
+    range(len(MONTHS)),
+    key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days)
+)
+
+# =========================
 # BUGÜN
 # =========================
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(timezone.utc).date()
 
+    current_index = None
+
     for i, m in enumerate(MONTHS):
         if m <= today:
-            current_month = m
             current_index = i
 
-    gun = (today - current_month).days + 1
+    if current_index is None:
+        await update.message.reply_text("Hata")
+        return
+
+    start = MONTHS[current_index]
+
+    gun = (today - start).days + 1
     ay_index = (current_index - ANCHOR_INDEX + 11) % 12
 
     await update.message.reply_text(
@@ -133,10 +143,13 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     year = int(context.args[0])
 
+    start = datetime(year,1,1).date()
+    end = datetime(year,12,31).date()
+
     text = f"📅 {year} Hicri Aylar\n\n"
 
     for i, m in enumerate(MONTHS):
-        if m.year == year:
+        if start <= m <= end:
             ay_index = (i - ANCHOR_INDEX + 11) % 12
             text += f"{AYLAR[ay_index]}: {m}\n"
 
@@ -186,79 +199,34 @@ async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Yarın": base + timedelta(days=1)
     }.items():
 
-        found = False
+        score, alt, elong, age = hilal_score(date, datetime.now(timezone.utc))
 
-        for hour in range(16, 23):
-            alt, elong = hilal_kontrol_saat(date, 21.4, 39.8, hour)
-
-            if alt > 5 and elong > 10:
-                text += f"{label}: ✅ {hour}:00 UTC\n"
-                found = True
-                break
-
-        if not found:
-            text += f"{label}: ❌\n"
+        if score > 7:
+            text += f"{label}: ✅ (score={score:.1f})\n"
+        else:
+            text += f"{label}: ❌ (score={score:.1f})\n"
 
     await update.message.reply_text(text)
 
 # =========================
-# HİLAL HARİTA
-# =========================
-async def hilal_harita(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now(timezone.utc).date()
-
-    grid = {
-        "Amerika": (-20, -60),
-        "Afrika": (10, 20),
-        "Avrupa": (50, 10),
-        "Ortadoğu": (25, 45),
-        "Asya": (35, 100),
-    }
-
-    text = "🗺️ Hilal Harita\n\n"
-
-    for name, (lat, lon) in grid.items():
-
-        ok = False
-
-        for hour in range(16, 23):
-            alt, elong = hilal_kontrol_saat(today, lat, lon, hour)
-
-            if alt > 5 and elong > 10:
-                ok = True
-                break
-
-        text += f"{name}: {'🟢' if ok else '🔴'}\n"
-
-    await update.message.reply_text(text)
-
-# =========================
-# BAYRAM
+# BAYRAM TAHMİN
 # =========================
 async def bayram(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
 
-    hilal = False
+    score, _, _, _ = hilal_score(tomorrow, datetime.now(timezone.utc))
 
-    for hour in range(16, 23):
-        alt, elong = hilal_kontrol_saat(tomorrow, 21.4, 39.8, hour)
-
-        if alt > 5 and elong > 10:
-            hilal = True
-            break
-
-    if hilal:
-        text = "🎉 Yarın büyük ihtimalle Bayram"
+    if score > 7:
+        text = f"🎉 Yarın Bayram olabilir\n(score={score:.1f})"
     else:
-        text = "📅 Bayram henüz değil"
+        text = f"📅 Bayram değil\n(score={score:.1f})"
 
     await update.message.reply_text(text)
 
 # =========================
-# AI KARAR
+# AI KARAR MOTORU
 # =========================
 async def karar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
 
     countries = {
@@ -271,13 +239,11 @@ async def karar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🧠 Karar Motoru\n\n"
 
     for name, (lat, lon) in countries.items():
-
         best = 0
 
         for hour in range(16, 23):
-            alt, elong = hilal_kontrol_saat(tomorrow, lat, lon, hour)
-
-            score = alt + elong
+            alt, elong = hilal_param(tomorrow, lat, lon, hour)
+            score = (alt * 0.5) + (elong * 0.5)
 
             if score > best:
                 best = score
@@ -298,9 +264,9 @@ async def karar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌙 Hicri Motor FULL\n\n"
-        "/bugun\n/yil 2030\n/ramazan 2030\n/arefe 2030\n"
-        "/hilal_3gun\n/hilal_harita\n/bayram\n/karar"
+        "🌙 ULTIMATE Hicri Motor\n\n"
+        "/bugun\n/yil 2025\n/ramazan 2025\n/arefe 2025\n"
+        "/hilal_3gun\n/bayram\n/karar"
     )
 
 # =========================
@@ -314,9 +280,8 @@ app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("ramazan", ramazan))
 app.add_handler(CommandHandler("arefe", arefe))
 app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
-app.add_handler(CommandHandler("hilal_harita", hilal_harita))
 app.add_handler(CommandHandler("bayram", bayram))
 app.add_handler(CommandHandler("karar", karar))
 
-print("🚀 FULL SİSTEM AKTİF")
+print("🚀 ULTIMATE MODEL AKTİF")
 app.run_polling()
