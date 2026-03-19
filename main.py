@@ -22,7 +22,7 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# GERÇEK DATA (25 YIL)
+# DATASET
 # =========================
 REAL_DATA = {
     2000: "2000-11-27", 2001: "2001-11-17", 2002: "2002-11-06",
@@ -70,45 +70,47 @@ def hilal_score(date, nm):
 
     age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-    score = alt.degrees*0.5 + elong*0.3 + age*0.2
-
-    return score
+    return alt.degrees*0.5 + elong*0.3 + age*0.2
 
 # =========================
-# ADAPTIVE CALIBRATION
+# SELF LEARNING CALIBRATION
 # =========================
-def calibrate():
+def train_model():
 
+    best_threshold = 5.5
     best_shift = 0
     best_error = 999
 
-    for shift in [-1, 0, 1]:
+    for threshold in [4.5, 5.0, 5.5, 6.0]:
+        for shift in [-1, 0, 1]:
 
-        total = 0
+            total = 0
 
-        for year, real_str in REAL_DATA.items():
+            for year, real_str in REAL_DATA.items():
 
-            real = datetime.fromisoformat(real_str).date()
+                real = datetime.fromisoformat(real_str).date()
+                nm = [x for x in NEW_MOONS if x.year == year][0]
 
-            nm = [x for x in NEW_MOONS if x.year == year][0]
+                d1 = (nm + timedelta(days=1+shift)).date()
+                d2 = (nm + timedelta(days=2+shift)).date()
 
-            d1 = (nm + timedelta(days=1+shift)).date()
-            d2 = (nm + timedelta(days=2+shift)).date()
+                s1 = hilal_score(d1, nm)
 
-            s1 = hilal_score(d1, nm)
-            s2 = hilal_score(d2, nm)
+                if s1 > threshold:
+                    model = d1
+                else:
+                    model = d2
 
-            model = d1 if s1 > s2 else d2
+                total += abs((model - real).days)
 
-            total += abs((model - real).days)
+            if total < best_error:
+                best_error = total
+                best_threshold = threshold
+                best_shift = shift
 
-        if total < best_error:
-            best_error = total
-            best_shift = shift
+    return best_threshold, best_shift
 
-    return best_shift
-
-SHIFT = calibrate()
+THRESHOLD, SHIFT = train_model()
 
 # =========================
 # AY BAŞLANGIÇ
@@ -123,9 +125,8 @@ def get_month_starts():
         d2 = (nm + timedelta(days=2+SHIFT)).date()
 
         s1 = hilal_score(d1, nm)
-        s2 = hilal_score(d2, nm)
 
-        if s1 >= s2:
+        if s1 > THRESHOLD:
             starts.append(d1)
         else:
             starts.append(d2)
@@ -135,7 +136,7 @@ def get_month_starts():
 MONTHS = get_month_starts()
 
 # =========================
-# AY İSİMLERİ
+# AYLAR
 # =========================
 AYLAR = [
     "Muharrem","Safer","Rebiülevvel","Rebiülahir",
@@ -143,9 +144,6 @@ AYLAR = [
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-# =========================
-# ANCHOR
-# =========================
 ANCHOR_DATE = datetime(2025,3,1).date()
 
 ANCHOR_INDEX = min(range(len(MONTHS)),
@@ -174,44 +172,26 @@ def get_hijri(date):
     return gun, AYLAR[ay]
 
 # =========================
-# YIL ANALİZ
-# =========================
-def analyze_year(year):
-
-    ramazan = None
-    zilhicce = None
-
-    for i,m in enumerate(MONTHS):
-
-        diff = i - ANCHOR_INDEX
-        ay = (8 + diff) % 12
-
-        if ay == 8 and m.year == year:
-            ramazan = m
-
-        if ay == 11 and m.year == year:
-            zilhicce = m
-
-    return {
-        "ramazan": ramazan,
-        "bayram": ramazan + timedelta(days=29),
-        "arefe": zilhicce + timedelta(days=8),
-        "kurban": zilhicce + timedelta(days=9)
-    }
-
-# =========================
 # TEST
 # =========================
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    text = "📊 TEST (25 YIL)\n\n"
+    text = "📊 TEST (AI)\n\n"
     total = 0
     ok = 0
 
     for year, real_str in REAL_DATA.items():
 
         real = datetime.fromisoformat(real_str).date()
-        model = analyze_year(year)["ramazan"]
+
+        nm = [x for x in NEW_MOONS if x.year == year][0]
+
+        d1 = (nm + timedelta(days=1+SHIFT)).date()
+        d2 = (nm + timedelta(days=2+SHIFT)).date()
+
+        s1 = hilal_score(d1, nm)
+
+        model = d1 if s1 > THRESHOLD else d2
 
         diff = (model - real).days
 
@@ -224,6 +204,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text += f"\n🎯 {ok}/26 doğru"
     text += f"\n📉 hata: {total}"
+    text += f"\n⚙️ threshold={THRESHOLD} shift={SHIFT}"
 
     await update.message.reply_text(text)
 
@@ -240,29 +221,12 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# YIL
-# =========================
-async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    y = int(context.args[0])
-    d = analyze_year(y)
-
-    await update.message.reply_text(
-        f"📅 {y}\n\n"
-        f"🌙 Ramazan: {d['ramazan']}\n"
-        f"🎉 Bayram: {d['bayram']}\n"
-        f"🐑 Arefe: {d['arefe']}\n"
-        f"🐑 Kurban: {d['kurban']}"
-    )
-
-# =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 ULTIMATE v3\n\n"
+        "🚀 AI HİLAL MOTOR\n\n"
         "/bugun\n"
-        "/yil 2025\n"
         "/test"
     )
 
@@ -273,8 +237,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 
-print(f"🚀 AI AKTİF | SHIFT={SHIFT}")
+print(f"🚀 AI AKTİF | T={THRESHOLD} SHIFT={SHIFT}")
 app.run_polling()
