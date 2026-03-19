@@ -8,9 +8,11 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
+# =========================
 TOKEN = os.getenv("TOKEN")
 logging.basicConfig(level=logging.INFO)
 
+# =========================
 ts = load.timescale()
 eph = load('de421.bsp')
 
@@ -19,7 +21,7 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# NEW MOON
+# 🌙 NEW MOON
 # =========================
 def get_new_moons(start=2024, end=2030):
     t0 = ts.utc(start, 1, 1)
@@ -34,7 +36,7 @@ def get_new_moons(start=2024, end=2030):
     ]
 
 # =========================
-# HİLAL
+# 🌙 HİLAL
 # =========================
 def hilal_visible(date):
     t = ts.utc(date.year, date.month, date.day, 18)
@@ -45,13 +47,13 @@ def hilal_visible(date):
 
     elong = m.separation_from(s).degrees
 
-    loc = earth + Topos(21.4, 39.8)
+    loc = earth + Topos(21.4, 39.8)  # Mekke referans
     alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
 
     return alt.degrees > 5 and elong > 10
 
 # =========================
-# AY BAŞLANGIÇLARI
+# 🔥 AY BAŞLANGIÇLARI
 # =========================
 def build_months():
     new_moons = get_new_moons()
@@ -70,7 +72,7 @@ def build_months():
     return sorted(months)
 
 # =========================
-# BUGÜN
+# 🔥 BUGÜN
 # =========================
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -83,19 +85,15 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
     ]
 
-    # 🔥 ANCHOR: 2025 Haziran civarı = Zilhicce
-    anchor_index = None
+    # 🔥 DOĞRU ANCHOR (ZİLHİCCE 1)
+    anchor_target = datetime(2025, 5, 28).date()
 
-    for i, m in enumerate(months):
-        if m.year == 2025 and m.month == 6:
-            anchor_index = i
-            break
+    anchor_index = min(
+        range(len(months)),
+        key=lambda i: abs((months[i] - anchor_target).days)
+    )
 
-    if anchor_index is None:
-        await update.message.reply_text("❌ Anchor bulunamadı")
-        return
-
-    # bugünün bulunduğu ay
+    # 🔥 BUGÜNÜN AYI
     current_month = None
     current_index = 0
 
@@ -110,7 +108,7 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     gun = (today - current_month).days + 1
 
-    # 🔥 AY HESABI
+    # 🔥 AY HESABI (FIX)
     ay_index = (current_index - anchor_index + 11) % 12
 
     await update.message.reply_text(
@@ -118,16 +116,20 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# START
+# 🚀 START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🌙 Hicri Motor\n\n/bugun")
+    await update.message.reply_text(
+        "🌙 Hicri Motor FINAL\n\n/bugun"
+    )
 
+# =========================
+# 🚀 APP
 # =========================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 
-print("🚀 SİSTEM AKTİF")
+print("🚀 FINAL SİSTEM AKTİF")
 app.run_polling()
