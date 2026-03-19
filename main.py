@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from skyfield.api import load, Topos
 
@@ -18,15 +18,13 @@ earth = eph['earth']
 moon = eph['moon']
 sun = eph['sun']
 
-# 🌍 ÜLKELER
-COUNTRIES = {
-    "suudi": (21.4, 39.8),
-    "turkiye": (39.0, 35.0),
-    "iran": (35.0, 51.0),
-    "afganistan": (34.5, 69.2),
-}
+COUNTRIES = [
+    (21.4,39.8),
+    (39.0,35.0),
+    (35.0,51.0),
+    (34.5,69.2),
+]
 
-# 🔥 AREFE DATA (kalibrasyon)
 AREFE_DATA = {
     2020:"2020-07-30",
     2021:"2021-07-19",
@@ -45,54 +43,65 @@ def elongation(t):
 
 # 🌙 görünürlük
 def visible(date, lat, lon):
-    t = ts.utc(date.year, date.month, date.day, 18)
+    t = ts.utc(date.year,date.month,date.day,18)
 
     loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
     alt,_,_ = loc.at(t).observe(moon).apparent().altaz()
 
     return alt.degrees > 0 and elongation(t) > 7
 
-# 🔥 AY BAŞLANGICI (ülkeye göre)
-def find_month(date, lat, lon):
-    for i in range(3):
-        d = date + timedelta(days=i)
-        if visible(d, lat, lon):
-            return d
-    return date + timedelta(days=1)
-
-# 🔥 YIL HESAP (ülkeye göre)
-def build_year_country(year, lat, lon):
+# 🔥 model arefe
+def model_arefe(year):
     start = datetime(year,1,1,tzinfo=timezone.utc)
-    months = []
     current = start
+    months = []
 
     for _ in range(12):
-        m = find_month(current, lat, lon)
-        months.append(m)
-        current = m + timedelta(days=29)
+        for i in range(3):
+            d = current + timedelta(days=i)
 
-    return months
+            if any(visible(d,lat,lon) for lat,lon in COUNTRIES):
+                months.append(d)
+                current = d + timedelta(days=29)
+                break
 
-# 🔥 KALİBRASYON OFFSET
+    return months[11] + timedelta(days=8)
+
+# 🔥 OFFSET
 def compute_offset():
     diffs = []
-    for y,d in AREFE_DATA.items():
-        real = datetime.fromisoformat(d)
-        model = build_year_country(y,21.4,39.8)[11] + timedelta(days=8)
-        diffs.append((real-model).days)
+
+    for year, real_str in AREFE_DATA.items():
+        real = datetime.fromisoformat(real_str)  # naive
+        model = model_arefe(year).replace(tzinfo=None)  # FIX
+
+        diff = (real - model).days
+        diffs.append(diff)
+
     return round(sum(diffs)/len(diffs))
 
 OFFSET = compute_offset()
 
-# 🔥 KALİBRE EDİLMİŞ TAKVİM
-def build_calibrated(year, lat, lon):
-    months = build_year_country(year, lat, lon)
-    return [m + timedelta(days=OFFSET) for m in months]
+# 🔥 kalibre arefe
+def calibrated_arefe(year):
+    return model_arefe(year) + timedelta(days=OFFSET)
 
-# 📅 BUGÜN (ülkeye göre)
-def today_hijri(lat, lon):
+# 🔥 yıl oluştur
+def build_year(year):
+    arefe = calibrated_arefe(year)
+
+    months = [None]*12
+    months[11] = arefe - timedelta(days=8)
+
+    for i in range(10,-1,-1):
+        months[i] = months[i+1] - timedelta(days=29)
+
+    return months
+
+# 🚀 BUGÜN
+async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(timezone.utc).date()
-    months = build_calibrated(today.year, lat, lon)
+    months = build_year(today.year)
 
     ay = 1
     for i,m in enumerate(months):
@@ -100,83 +109,32 @@ def today_hijri(lat, lon):
             ay = i+1
 
     gun = (today - months[ay-1].date()).days + 1
-    return ay, gun
 
-# 🚀 /ulke_takvim
-async def ulke_takvim(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        ulke = context.args[0].lower()
-    except:
-        await update.message.reply_text("Örnek: /ulke_takvim turkiye")
-        return
+    ay_isimleri = [
+        "Muharrem","Safer","Rebiülevvel","Rebiülahir",
+        "Cemaziyelevvel","Cemaziyelahir","Recep",
+        "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
+    ]
 
-    if ulke not in COUNTRIES:
-        await update.message.reply_text("❌ Ülke yok")
-        return
+    msg = f"📅 BUGÜN\n\n"
+    msg += f"Miladi: {today}\n"
+    msg += f"Hicri: {gun} {ay_isimleri[ay-1]}\n\n"
+    msg += f"⚙️ Offset: {OFFSET} gün"
 
-    lat, lon = COUNTRIES[ulke]
-
-    ay, gun = today_hijri(lat, lon)
-
-    await update.message.reply_text(
-        f"📍 {ulke.upper()}\n\n"
-        f"Hicri Ay: {ay}\n"
-        f"Gün: {gun}"
-    )
-
-# 🚀 /karsilastir_ulke
-async def karsilastir_ulke(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ay_t, gun_t = today_hijri(*COUNTRIES["turkiye"])
-    ay_s, gun_s = today_hijri(*COUNTRIES["suudi"])
-
-    await update.message.reply_text(
-        "📊 TÜRKİYE vs SUUDİ\n\n"
-        f"🇹🇷 Türkiye: {ay_t}.{gun_t}\n"
-        f"🇸🇦 Suudi: {ay_s}.{gun_s}"
-    )
-
-# 🚀 RAMAZAN KONTROL (otomatik)
-async def ramazan_kontrol(context: ContextTypes.DEFAULT_TYPE):
-    bot = context.bot
-
-    lat, lon = COUNTRIES["turkiye"]
-    ay, gun = today_hijri(lat, lon)
-
-    if ay == 9 and gun == 1:
-        await bot.send_message(
-            chat_id=context.job.chat_id,
-            text="🌙 RAMAZAN BAŞLADI!"
-        )
-
-# 🚀 /ramazan_abone
-async def ramazan_abone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-
-    context.job_queue.run_daily(
-        ramazan_kontrol,
-        time=datetime.now().time(),
-        chat_id=chat_id,
-        name=str(chat_id)
-    )
-
-    await update.message.reply_text("🔔 Ramazan bildirimi aktif")
+    await update.message.reply_text(msg)
 
 # 🚀 START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌙 GLOBAL HİCRİ MOTOR\n\n"
-        "/ulke_takvim turkiye\n"
-        "/karsilastir_ulke\n"
-        "/ramazan_abone"
+        "🌙 HİCRİ MOTOR\n\n"
+        "/bugun"
     )
 
 # 🚀 APP
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("ulke_takvim", ulke_takvim))
-app.add_handler(CommandHandler("karsilastir_ulke", karsilastir_ulke))
-app.add_handler(CommandHandler("ramazan_abone", ramazan_abone))
+app.add_handler(CommandHandler("bugun", bugun))
 
-print("ULTRA SİSTEM AKTİF 🚀")
+print("Çalışıyor 🚀")
 app.run_polling()
