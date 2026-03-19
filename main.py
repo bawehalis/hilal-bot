@@ -47,7 +47,7 @@ def hilal_var(date):
         loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
         alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
 
-        if alt.degrees > 6 and elong > 8:
+        if alt.degrees > 6 and elong > 11:
             return True
 
     return False
