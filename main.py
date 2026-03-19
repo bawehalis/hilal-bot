@@ -22,7 +22,7 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# 25 YIL GERÇEK DATA
+# GERÇEK DATA (25 YIL)
 # =========================
 REAL = {
     2000:"2000-11-27",2001:"2001-11-17",2002:"2002-11-06",
@@ -35,6 +35,13 @@ REAL = {
     2021:"2021-04-13",2022:"2022-04-02",2023:"2023-03-23",
     2024:"2024-03-11",2025:"2025-03-01",
 }
+
+# =========================
+# PARAM (İLK AYAR)
+# =========================
+ALT_T = 3
+ELONG_T = 6
+AGE_T = 10
 
 # =========================
 # NEW MOONS
@@ -56,11 +63,11 @@ NEW_MOONS = get_new_moons()
 # =========================
 # HİLAL MODEL
 # =========================
-def visible(date, nm, ALT_T, ELONG_T, AGE_T):
+def visible(date, nm):
 
     t = ts.utc(date.year, date.month, date.day, 18)
 
-    loc = earth + Topos(21.4,39.8)  # Mekke referans
+    loc = earth + Topos(21.4,39.8)
 
     e = loc.at(t)
     m = e.observe(moon).apparent()
@@ -76,7 +83,7 @@ def visible(date, nm, ALT_T, ELONG_T, AGE_T):
 # =========================
 # AY BAŞLANGIÇ
 # =========================
-def build_months(ALT_T, ELONG_T, AGE_T):
+def get_months():
 
     months = []
 
@@ -85,7 +92,7 @@ def build_months(ALT_T, ELONG_T, AGE_T):
         for i in [1,2,3]:
             d = (nm + timedelta(days=i)).date()
 
-            if visible(d, nm, ALT_T, ELONG_T, AGE_T):
+            if visible(d, nm):
                 months.append(d)
                 break
         else:
@@ -93,42 +100,7 @@ def build_months(ALT_T, ELONG_T, AGE_T):
 
     return sorted(months)
 
-# =========================
-# OPTIMIZE (DOĞRU ARALIK)
-# =========================
-def optimize():
-
-    best = None
-    best_error = 9999
-
-    for alt in [2,3,4]:
-        for elong in [5,6,7]:
-            for age in [8,10,12]:
-
-                months = build_months(alt, elong, age)
-
-                error = 0
-
-                for year, real_str in REAL.items():
-
-                    real = datetime.fromisoformat(real_str).date()
-
-                    model = min(months, key=lambda x: abs((x-real).days))
-
-                    error += abs((model - real).days)
-
-                if error < best_error:
-                    best_error = error
-                    best = (alt, elong, age)
-
-    return best, best_error
-
-ALT_T, ELONG_T, AGE_T = optimize()[0]
-
-# =========================
-# MONTHS
-# =========================
-MONTHS = build_months(ALT_T, ELONG_T, AGE_T)
+MONTHS = get_months()
 
 # =========================
 # ANCHOR
@@ -188,9 +160,90 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text += f"\n🎯 {ok}/26 doğru"
     text += f"\n📉 hata: {total}"
-    text += f"\n⚙️ alt={ALT_T} elong={ELONG_T} age={AGE_T}"
 
     await update.message.reply_text(text)
+
+# =========================
+# AYAR ANALİZ
+# =========================
+async def ayar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    pos = 0
+    neg = 0
+
+    for y, real_str in REAL.items():
+
+        real = datetime.fromisoformat(real_str).date()
+        model = min(MONTHS, key=lambda x: abs((x-real).days))
+
+        diff = (model - real).days
+
+        if diff > 0:
+            pos += 1
+        elif diff < 0:
+            neg += 1
+
+    text = "⚙️ AYAR ANALİZ\n\n"
+    text += f"Geç: {pos}\nErken: {neg}\n\n"
+
+    if pos > neg:
+        text += "📉 Geç hesap\nALT düşür\nAGE düşür"
+    elif neg > pos:
+        text += "📈 Erken hesap\nALT artır\nAGE artır"
+    else:
+        text += "✅ Dengeli"
+
+    text += f"\n\nMevcut: alt={ALT_T} elong={ELONG_T} age={AGE_T}"
+
+    await update.message.reply_text(text)
+
+# =========================
+# HİLAL 3 GÜN
+# =========================
+async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    today = datetime.now(timezone.utc).date()
+
+    def check(d):
+        nm = min(NEW_MOONS, key=lambda x: abs((x.date()-d)))
+        return visible(d, nm)
+
+    d1 = "✅" if check(today- timedelta(days=1)) else "❌"
+    d2 = "✅" if check(today) else "❌"
+    d3 = "✅" if check(today+ timedelta(days=1)) else "❌"
+
+    text = f"""🌙 3 Gün
+
+Dün: {d1}
+Bugün: {d2}
+Yarın: {d3}"""
+
+    await update.message.reply_text(text)
+
+# =========================
+# KARAR
+# =========================
+async def karar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    today = datetime.now(timezone.utc).date()
+
+    scores = []
+
+    for lat,lon in [(21,39),(39,35),(35,51)]:
+        nm = min(NEW_MOONS, key=lambda x: abs((x.date()-today)))
+        if visible(today, nm):
+            scores.append(1)
+        else:
+            scores.append(0)
+
+    s = sum(scores)
+
+    if s >= 2:
+        msg = "🎉 Bayram"
+    else:
+        msg = "❌ Değil"
+
+    await update.message.reply_text(f"Karar: {msg}")
 
 # =========================
 # BUGÜN
@@ -200,9 +253,7 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(timezone.utc).date()
     g,a = get_hijri(today)
 
-    await update.message.reply_text(
-        f"📅 Bugün\n\nMiladi: {today}\nHicri: {g} {a}"
-    )
+    await update.message.reply_text(f"{today}\nHicri: {g} {a}")
 
 # =========================
 # APP
@@ -211,6 +262,9 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("test", test))
+app.add_handler(CommandHandler("ayar", ayar))
+app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
+app.add_handler(CommandHandler("karar", karar))
 
-print(f"🚀 OPTİMİZE AKTİF alt={ALT_T} elong={ELONG_T} age={AGE_T}")
+print("🚀 FULL SİSTEM AKTİF")
 app.run_polling()
