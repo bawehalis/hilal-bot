@@ -22,7 +22,7 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# DATASET
+# GERÇEK DATA (25 YIL)
 # =========================
 REAL_DATA = {
     2000: "2000-11-27", 2001: "2001-11-17", 2002: "2002-11-06",
@@ -40,7 +40,7 @@ REAL_DATA = {
 # NEW MOONS
 # =========================
 def get_new_moons():
-    t0 = ts.utc(2000, 1, 1)
+    t0 = ts.utc(1995, 1, 1)
     t1 = ts.utc(2035, 12, 31)
 
     times, phases = find_discrete(t0, t1, moon_phases(eph))
@@ -52,6 +52,20 @@ def get_new_moons():
     ]
 
 NEW_MOONS = get_new_moons()
+
+# =========================
+# DOĞRU NEW MOON BUL (FIX)
+# =========================
+def find_ramadan_newmoon(year):
+
+    target = datetime(year, 3, 15, tzinfo=timezone.utc)
+
+    candidates = [
+        nm for nm in NEW_MOONS
+        if abs(nm.year - year) <= 1
+    ]
+
+    return min(candidates, key=lambda x: abs(x - target))
 
 # =========================
 # HİLAL SKOR
@@ -73,125 +87,87 @@ def hilal_score(date, nm):
     return alt.degrees*0.5 + elong*0.3 + age*0.2
 
 # =========================
-# SELF LEARNING CALIBRATION
+# SELF LEARNING
 # =========================
 def train_model():
 
-    best_threshold = 5.5
-    best_shift = 0
-    best_error = 999
+    best_t = 5.5
+    best_s = 0
+    best_err = 999
 
-    for threshold in [4.5, 5.0, 5.5, 6.0]:
-        for shift in [-1, 0, 1]:
+    for t in [4.5,5.0,5.5,6.0]:
+        for s in [-1,0,1]:
 
             total = 0
 
             for year, real_str in REAL_DATA.items():
 
                 real = datetime.fromisoformat(real_str).date()
-                nm = [x for x in NEW_MOONS if x.year == year][0]
+                nm = find_ramadan_newmoon(year)
 
-                d1 = (nm + timedelta(days=1+shift)).date()
-                d2 = (nm + timedelta(days=2+shift)).date()
+                d1 = (nm + timedelta(days=1+s)).date()
+                d2 = (nm + timedelta(days=2+s)).date()
 
-                s1 = hilal_score(d1, nm)
+                score = hilal_score(d1, nm)
 
-                if s1 > threshold:
-                    model = d1
-                else:
-                    model = d2
+                model = d1 if score > t else d2
 
                 total += abs((model - real).days)
 
-            if total < best_error:
-                best_error = total
-                best_threshold = threshold
-                best_shift = shift
+            if total < best_err:
+                best_err = total
+                best_t = t
+                best_s = s
 
-    return best_threshold, best_shift
+    return best_t, best_s
 
 THRESHOLD, SHIFT = train_model()
 
 # =========================
-# AY BAŞLANGIÇ
+# RAMAZAN BUL
 # =========================
-def get_month_starts():
+def get_ramadan(year):
 
-    starts = []
+    nm = find_ramadan_newmoon(year)
 
-    for nm in NEW_MOONS:
+    d1 = (nm + timedelta(days=1+SHIFT)).date()
+    d2 = (nm + timedelta(days=2+SHIFT)).date()
 
-        d1 = (nm + timedelta(days=1+SHIFT)).date()
-        d2 = (nm + timedelta(days=2+SHIFT)).date()
+    score = hilal_score(d1, nm)
 
-        s1 = hilal_score(d1, nm)
-
-        if s1 > THRESHOLD:
-            starts.append(d1)
-        else:
-            starts.append(d2)
-
-    return sorted(starts)
-
-MONTHS = get_month_starts()
+    return d1 if score > THRESHOLD else d2
 
 # =========================
-# AYLAR
+# BUGÜN
 # =========================
-AYLAR = [
-    "Muharrem","Safer","Rebiülevvel","Rebiülahir",
-    "Cemaziyelevvel","Cemaziyelahir","Recep",
-    "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
-]
+async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-ANCHOR_DATE = datetime(2025,3,1).date()
+    today = datetime.now(timezone.utc).date()
 
-ANCHOR_INDEX = min(range(len(MONTHS)),
-                   key=lambda i: abs((MONTHS[i]-ANCHOR_DATE).days))
+    # yaklaşık yıl tahmini
+    year = today.year
 
-# =========================
-# HİCRİ
-# =========================
-def get_hijri(date):
+    ramazan = get_ramadan(year)
 
-    idx = None
+    gun = (today - ramazan).days + 1
 
-    for i,m in enumerate(MONTHS):
-        if m <= date:
-            idx = i
-
-    if idx is None:
-        return 0,"?"
-
-    diff = idx - ANCHOR_INDEX
-    ay = (8 + diff) % 12
-
-    start = MONTHS[idx]
-    gun = (date - start).days + 1
-
-    return gun, AYLAR[ay]
+    await update.message.reply_text(
+        f"📅 Bugün\n\nMiladi: {today}\nHicri: {gun} Ramazan"
+    )
 
 # =========================
 # TEST
 # =========================
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    text = "📊 TEST (AI)\n\n"
+    text = "📊 TEST (25 YIL)\n\n"
     total = 0
     ok = 0
 
     for year, real_str in REAL_DATA.items():
 
         real = datetime.fromisoformat(real_str).date()
-
-        nm = [x for x in NEW_MOONS if x.year == year][0]
-
-        d1 = (nm + timedelta(days=1+SHIFT)).date()
-        d2 = (nm + timedelta(days=2+SHIFT)).date()
-
-        s1 = hilal_score(d1, nm)
-
-        model = d1 if s1 > THRESHOLD else d2
+        model = get_ramadan(year)
 
         diff = (model - real).days
 
@@ -204,28 +180,16 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text += f"\n🎯 {ok}/26 doğru"
     text += f"\n📉 hata: {total}"
-    text += f"\n⚙️ threshold={THRESHOLD} shift={SHIFT}"
+    text += f"\n⚙️ t={THRESHOLD} shift={SHIFT}"
 
     await update.message.reply_text(text)
-
-# =========================
-# BUGÜN
-# =========================
-async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    today = datetime.now(timezone.utc).date()
-    g,a = get_hijri(today)
-
-    await update.message.reply_text(
-        f"📅 Bugün\n\nMiladi: {today}\nHicri: {g} {a}"
-    )
 
 # =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 AI HİLAL MOTOR\n\n"
+        "🚀 AI HİLAL MOTOR FINAL\n\n"
         "/bugun\n"
         "/test"
     )
@@ -239,5 +203,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("test", test))
 
-print(f"🚀 AI AKTİF | T={THRESHOLD} SHIFT={SHIFT}")
+print(f"🚀 FINAL AKTİF | t={THRESHOLD} shift={SHIFT}")
 app.run_polling()
