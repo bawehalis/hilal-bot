@@ -8,11 +8,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
+# =========================
 TOKEN = os.getenv("TOKEN")
 logging.basicConfig(level=logging.INFO)
 
 # =========================
-# DATASET
+# DATASET (25 YIL)
 # =========================
 REAL_DATA = {
     2000: "2000-11-27",
@@ -54,6 +55,27 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
+# GRID + ŞEHİR
+# =========================
+GRID = {
+    "Amerika": (0, -70),
+    "Afrika": (15, 30),
+    "Türkiye": (39, 35),
+    "Suudi": (21, 39),
+    "İran": (35, 51),
+    "Afganistan": (34, 65),
+}
+
+CITIES = {
+    "istanbul": (41.01, 28.97),
+    "ankara": (39.93, 32.85),
+    "izmir": (38.42, 27.14),
+    "mekke": (21.39, 39.86),
+    "medine": (24.47, 39.61),
+    "cidde": (21.54, 39.17),
+}
+
+# =========================
 # NEW MOON
 # =========================
 def get_new_moons():
@@ -73,8 +95,8 @@ NEW_MOONS = get_new_moons()
 # =========================
 # PARAM
 # =========================
-def hilal_param(date, lat=20, lon=30):
-    t = ts.utc(date.year, date.month, date.day, 18)
+def hilal_param(date, lat, lon, hour=18):
+    t = ts.utc(date.year, date.month, date.day, hour)
 
     loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
 
@@ -94,7 +116,7 @@ def score(alt, elong):
     return (alt * 0.6) + (elong * 0.4)
 
 # =========================
-# CALIBRATION
+# AUTO CALIBRATION (25 yıl)
 # =========================
 def auto_calibrate():
 
@@ -110,10 +132,11 @@ def auto_calibrate():
             real = datetime.fromisoformat(real_str).date()
 
             for nm in NEW_MOONS:
+
                 if nm.year == year:
 
                     d1 = (nm + timedelta(days=1)).date()
-                    s1 = score(*hilal_param(d1))
+                    s1 = score(*hilal_param(d1, 20, 30))
 
                     model = d1 if s1 > t else (nm + timedelta(days=2)).date()
 
@@ -136,10 +159,13 @@ def choose_day(nm):
     d1 = (nm + timedelta(days=1)).date()
     d2 = (nm + timedelta(days=2)).date()
 
-    s1 = score(*hilal_param(d1))
+    s1 = score(*hilal_param(d1, 20, 30))
 
     return d1 if s1 > THRESHOLD else d2
 
+# =========================
+# MONTHS
+# =========================
 MONTHS = sorted([choose_day(nm) for nm in NEW_MOONS])
 
 AYLAR = [
@@ -149,15 +175,15 @@ AYLAR = [
 ]
 
 # =========================
-# ANCHOR (RAMAZAN REFERANS)
+# ANCHOR
 # =========================
-ANCHOR = datetime(2025, 3, 1).date()  # RAMAZAN BAŞI
+ANCHOR = datetime(2025, 5, 29).date()
 
 ANCHOR_INDEX = min(range(len(MONTHS)),
                    key=lambda i: abs((MONTHS[i] - ANCHOR).days))
 
 # =========================
-# HİCRİ (FIX)
+# HİCRİ
 # =========================
 def get_hijri(date):
 
@@ -167,21 +193,16 @@ def get_hijri(date):
         if m <= date:
             idx = i
 
-    if idx is None:
-        return "?", "?", None, None, None
-
     start = MONTHS[idx]
-    next_m = MONTHS[idx + 1] if idx + 1 < len(MONTHS) else start + timedelta(days=29)
+    next_m = MONTHS[idx + 1]
 
     gun = (date - start).days + 1
-
-    # 🔥 DÜZELTME
-    ay = (idx - ANCHOR_INDEX) % 12
+    ay = (idx - ANCHOR_INDEX + 11) % 12
 
     return gun, AYLAR[ay], idx, start, next_m
 
 # =========================
-# BOT
+# BUGÜN
 # =========================
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -192,14 +213,101 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📅 Bugün\n\nMiladi: {today}\nHicri: {gun} {ay}"
     )
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 DÜZELTİLDİ\n\n/bugun")
+# =========================
+# TEST (25 yıl)
+# =========================
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
+    text = "📊 TEST (25 YIL)\n\n"
+
+    total = 0
+    ok = 0
+
+    for year, real_str in REAL_DATA.items():
+
+        real = datetime.fromisoformat(real_str).date()
+        model = None
+
+        for i, m in enumerate(MONTHS):
+            ay = (i - ANCHOR_INDEX + 11) % 12
+
+            if m.year == year and ay == 8:
+                model = m
+
+        if model:
+            diff = (model - real).days
+            total += abs(diff)
+
+            if diff == 0:
+                text += f"{year}: 0 🔥\n"
+                ok += 1
+            else:
+                text += f"{year}: {diff} ❗\n"
+
+    text += f"\n🎯 {ok}/26 doğru"
+    text += f"\n📉 hata: {total}"
+
+    await update.message.reply_text(text)
+
+# =========================
+# HİLAL
+# =========================
+async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    today = datetime.now(timezone.utc).date()
+
+    text = "🌙 HİLAL\n\n"
+
+    for name, (lat, lon) in GRID.items():
+        alt, elong = hilal_param(today, lat, lon)
+        s = score(alt, elong)
+
+        text += f"{name}: {round(s,1)}\n"
+
+    await update.message.reply_text(text)
+
+# =========================
+# ŞEHİR
+# =========================
+async def sehir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    city = context.args[0].lower()
+    lat, lon = CITIES[city]
+
+    today = datetime.now(timezone.utc).date()
+
+    best = (0, -999)
+
+    for h in range(15, 21):
+        alt, elong = hilal_param(today, lat, lon, h)
+        s = score(alt, elong)
+
+        if s > best[1]:
+            best = (h, s)
+
+    await update.message.reply_text(
+        f"{city}\n⏰ {best[0]}:00\nSkor: {best[1]:.1f}"
+    )
+
+# =========================
+# START
+# =========================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🚀 FINAL V5 PRO\n\n"
+        "/bugun\n/test\n/hilal\n/sehir istanbul"
+    )
+
+# =========================
+# APP
 # =========================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
+app.add_handler(CommandHandler("test", test))
+app.add_handler(CommandHandler("hilal", hilal))
+app.add_handler(CommandHandler("sehir", sehir))
 
 print(f"🚀 AKTİF (threshold={THRESHOLD})")
 app.run_polling()
