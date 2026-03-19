@@ -31,31 +31,39 @@ months = [
     "Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-# 🌇 GÜN BATIMI
+# 🌇 SUNSET
 def get_sunset(lat, lon, date):
-    location = Topos(latitude_degrees=lat, longitude_degrees=lon)
+    try:
+        location = Topos(latitude_degrees=lat, longitude_degrees=lon)
 
-    t0 = ts.utc(date.year, date.month, date.day)
-    t1 = ts.utc(date.year, date.month, date.day + 1)
+        t0 = ts.utc(date.year, date.month, date.day)
+        t1 = ts.utc(date.year, date.month, date.day + 1)
 
-    f = almanac.sunrise_sunset(eph, location)
-    times, events = almanac.find_discrete(t0, t1, f)
+        f = almanac.sunrise_sunset(eph, location)
+        times, events = almanac.find_discrete(t0, t1, f)
 
-    for t, e in zip(times, events):
-        if e == 0:  # sunset
-            return t
-    return None
+        for t, e in zip(times, events):
+            if e == 0:
+                return t
 
-# 🌙 HİLAL GÖRÜNÜRLÜK
+        return None
+    except:
+        return None
+
+# 🌙 HİLAL
 def visible(lat, lon, date):
     t = get_sunset(lat, lon, date)
-    if not t:
+
+    if t is None:
         return False
 
-    loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
-    alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
+    try:
+        loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
+        alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
 
-    return alt.degrees > 5
+        return alt.degrees > 5
+    except:
+        return False
 
 # 🌍 İLK GÖRÜLEN
 def first_visibility(date):
@@ -85,7 +93,7 @@ def generate_year(year):
 
     return results
 
-# 📅 TAKVİM GÖNDER
+# 📅 TAKVİM
 async def send_year(update, year):
     data = generate_year(year)
 
@@ -98,7 +106,7 @@ async def send_year(update, year):
 
     await update.message.reply_text(msg)
 
-# 🌍 ANALİZ GÖNDER
+# 🌍 ANALİZ
 async def send_analysis(update):
     today = datetime.now(timezone.utc).date()
 
@@ -117,38 +125,21 @@ async def send_analysis(update):
 # 🚀 START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌙 Astronomik Hicri Takvim\n\n"
+        "🌙 Sistem aktif\n\n"
         "👉 2027 yaz\n"
         "👉 analiz yaz"
     )
 
-# 📅 /yil KOMUT
-async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    match = re.search(r'\d{4}', text)
-
-    if match:
-        year = int(match.group())
-        await send_year(update, year)
-    else:
-        await update.message.reply_text("❗ Örnek: /yil 2027")
-
-# 🌍 /analiz KOMUT
-async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_analysis(update)
-
-# 🤖 SMART MESAJ
+# 🤖 SMART
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
     print("GELEN:", text)
 
-    # analiz kelimesi
-    if "analiz" in text or "hilal" in text:
+    if "analiz" in text:
         await send_analysis(update)
         return
 
-    # yıl
     match = re.search(r'\d{4}', text)
     if match:
         year = int(match.group())
@@ -162,10 +153,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("yil", yil))
-app.add_handler(CommandHandler("analiz", analiz))
-
-# 🔥 KRİTİK: TÜM MESAJLARI YAKALAR
 app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
 print("BOT AKTİF 🚀")
