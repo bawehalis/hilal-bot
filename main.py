@@ -8,8 +8,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
-# 🔥 TOKEN (ENV yoksa buraya yaz)
-TOKEN = os.getenv("TOKEN") or "BURAYA_TOKEN_YAZ"
+# 🔥 SADE TOKEN (ENV'DEN)
+TOKEN = os.environ["TOKEN"]
 
 logging.basicConfig(level=logging.INFO)
 
@@ -156,7 +156,7 @@ def get_hijri(date):
     return gun, AYLAR[ay]
 
 # =========================
-# YIL ANALİZ (FIXED)
+# YIL ANALİZ
 # =========================
 def analyze_year(year):
 
@@ -182,7 +182,6 @@ def analyze_year(year):
     ramazan = min(ramazan_list, key=lambda x: abs(x-target))
     zilhicce = min(zilhicce_list, key=lambda x: abs(x-target))
 
-    # 🔥 DÜZELTİLDİ
     next_ram = None
     for m in MONTHS:
         if m > ramazan:
@@ -252,5 +251,5 @@ app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 
-print("🚀 FULL AKTİF")
+print("🚀 HOSTING UYUMLU AKTİF")
 app.run_polling()
