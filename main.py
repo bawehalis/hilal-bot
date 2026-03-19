@@ -22,35 +22,18 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# GERÇEK DATASET (25 YIL)
+# GERÇEK DATA (25 YIL)
 # =========================
 REAL_DATA = {
-    2000: "2000-11-27",
-    2001: "2001-11-17",
-    2002: "2002-11-06",
-    2003: "2003-10-27",
-    2004: "2004-10-16",
-    2005: "2005-10-05",
-    2006: "2006-09-24",
-    2007: "2007-09-13",
-    2008: "2008-09-01",
-    2009: "2009-08-22",
-    2010: "2010-08-11",
-    2011: "2011-08-01",
-    2012: "2012-07-21",
-    2013: "2013-07-10",
-    2014: "2014-06-29",
-    2015: "2015-06-18",
-    2016: "2016-06-06",
-    2017: "2017-05-27",
-    2018: "2018-05-17",
-    2019: "2019-05-06",
-    2020: "2020-04-24",
-    2021: "2021-04-13",
-    2022: "2022-04-02",
-    2023: "2023-03-23",
-    2024: "2024-03-11",
-    2025: "2025-03-01",
+    2000: "2000-11-27", 2001: "2001-11-17", 2002: "2002-11-06",
+    2003: "2003-10-27", 2004: "2004-10-16", 2005: "2005-10-05",
+    2006: "2006-09-24", 2007: "2007-09-13", 2008: "2008-09-01",
+    2009: "2009-08-22", 2010: "2010-08-11", 2011: "2011-08-01",
+    2012: "2012-07-21", 2013: "2013-07-10", 2014: "2014-06-29",
+    2015: "2015-06-18", 2016: "2016-06-06", 2017: "2017-05-27",
+    2018: "2018-05-17", 2019: "2019-05-06", 2020: "2020-04-24",
+    2021: "2021-04-13", 2022: "2022-04-02", 2023: "2023-03-23",
+    2024: "2024-03-11", 2025: "2025-03-01",
 }
 
 # =========================
@@ -71,12 +54,11 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL MODEL (FIX)
+# HİLAL SKOR
 # =========================
-def visible(date, nm):
+def hilal_score(date, nm):
 
     t = ts.utc(date.year, date.month, date.day, 18)
-
     loc = earth + Topos(latitude_degrees=21.4, longitude_degrees=39.8)
 
     e = loc.at(t)
@@ -88,12 +70,45 @@ def visible(date, nm):
 
     age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-    if alt.degrees < -1 or elong < 5 or age < 10:
-        return False
-
     score = alt.degrees*0.5 + elong*0.3 + age*0.2
 
-    return score > 7
+    return score
+
+# =========================
+# ADAPTIVE CALIBRATION
+# =========================
+def calibrate():
+
+    best_shift = 0
+    best_error = 999
+
+    for shift in [-1, 0, 1]:
+
+        total = 0
+
+        for year, real_str in REAL_DATA.items():
+
+            real = datetime.fromisoformat(real_str).date()
+
+            nm = [x for x in NEW_MOONS if x.year == year][0]
+
+            d1 = (nm + timedelta(days=1+shift)).date()
+            d2 = (nm + timedelta(days=2+shift)).date()
+
+            s1 = hilal_score(d1, nm)
+            s2 = hilal_score(d2, nm)
+
+            model = d1 if s1 > s2 else d2
+
+            total += abs((model - real).days)
+
+        if total < best_error:
+            best_error = total
+            best_shift = shift
+
+    return best_shift
+
+SHIFT = calibrate()
 
 # =========================
 # AY BAŞLANGIÇ
@@ -104,14 +119,16 @@ def get_month_starts():
 
     for nm in NEW_MOONS:
 
-        for i in range(1,4):
-            d = (nm + timedelta(days=i)).date()
+        d1 = (nm + timedelta(days=1+SHIFT)).date()
+        d2 = (nm + timedelta(days=2+SHIFT)).date()
 
-            if visible(d, nm):
-                starts.append(d)
-                break
+        s1 = hilal_score(d1, nm)
+        s2 = hilal_score(d2, nm)
+
+        if s1 >= s2:
+            starts.append(d1)
         else:
-            starts.append((nm + timedelta(days=2)).date())
+            starts.append(d2)
 
     return sorted(starts)
 
@@ -135,7 +152,7 @@ ANCHOR_INDEX = min(range(len(MONTHS)),
                    key=lambda i: abs((MONTHS[i]-ANCHOR_DATE).days))
 
 # =========================
-# HİCRİ BUL
+# HİCRİ
 # =========================
 def get_hijri(date):
 
@@ -154,7 +171,7 @@ def get_hijri(date):
     start = MONTHS[idx]
     gun = (date - start).days + 1
 
-    return gun, AYLAR[ay], idx
+    return gun, AYLAR[ay]
 
 # =========================
 # YIL ANALİZ
@@ -162,33 +179,39 @@ def get_hijri(date):
 def analyze_year(year):
 
     ramazan = None
+    zilhicce = None
 
     for i,m in enumerate(MONTHS):
+
         diff = i - ANCHOR_INDEX
         ay = (8 + diff) % 12
 
         if ay == 8 and m.year == year:
             ramazan = m
 
-    if not ramazan:
-        ramazan = min(MONTHS, key=lambda x: abs(x - datetime(year,3,1).date()))
+        if ay == 11 and m.year == year:
+            zilhicce = m
 
-    return ramazan
+    return {
+        "ramazan": ramazan,
+        "bayram": ramazan + timedelta(days=29),
+        "arefe": zilhicce + timedelta(days=8),
+        "kurban": zilhicce + timedelta(days=9)
+    }
 
 # =========================
-# TEST (25 YIL)
+# TEST
 # =========================
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "📊 TEST (25 YIL)\n\n"
-
     total = 0
     ok = 0
 
     for year, real_str in REAL_DATA.items():
 
         real = datetime.fromisoformat(real_str).date()
-        model = analyze_year(year)
+        model = analyze_year(year)["ramazan"]
 
         diff = (model - real).days
 
@@ -210,7 +233,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     today = datetime.now(timezone.utc).date()
-    g,a,_ = get_hijri(today)
+    g,a = get_hijri(today)
 
     await update.message.reply_text(
         f"📅 Bugün\n\nMiladi: {today}\nHicri: {g} {a}"
@@ -222,10 +245,14 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     y = int(context.args[0])
-    r = analyze_year(y)
+    d = analyze_year(y)
 
     await update.message.reply_text(
-        f"📅 {y}\n\n🌙 Ramazan: {r}"
+        f"📅 {y}\n\n"
+        f"🌙 Ramazan: {d['ramazan']}\n"
+        f"🎉 Bayram: {d['bayram']}\n"
+        f"🐑 Arefe: {d['arefe']}\n"
+        f"🐑 Kurban: {d['kurban']}"
     )
 
 # =========================
@@ -233,7 +260,7 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 HİLAL MOTOR\n\n"
+        "🚀 ULTIMATE v3\n\n"
         "/bugun\n"
         "/yil 2025\n"
         "/test"
@@ -249,5 +276,5 @@ app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 
-print("🚀 FULL AKTİF + TEST")
+print(f"🚀 AI AKTİF | SHIFT={SHIFT}")
 app.run_polling()
