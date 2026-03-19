@@ -39,9 +39,9 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL GÖRÜNÜRLÜK
+# HİLAL
 # =========================
-def hilal_visible(date, nm):
+def visible(date, nm):
 
     t = ts.utc(date.year, date.month, date.day, 18)
 
@@ -61,29 +61,33 @@ def hilal_visible(date, nm):
 # =========================
 # AY BAŞLANGIÇ
 # =========================
-def get_month_starts():
+def get_months():
 
-    starts = []
+    months = []
 
     for nm in NEW_MOONS:
 
         for i in [1,2,3]:
-
             d = (nm + timedelta(days=i)).date()
 
-            if hilal_visible(d, nm):
-                starts.append(d)
+            if visible(d, nm):
+                months.append(d)
                 break
         else:
-            starts.append((nm + timedelta(days=2)).date())
+            months.append((nm + timedelta(days=2)).date())
 
-    return sorted(starts)
+    return sorted(months)
 
-MONTHS = get_month_starts()
+MONTHS = get_months()
 
 # =========================
-# AY İSİMLERİ
+# ANCHOR
 # =========================
+ANCHOR_DATE = datetime(2025,3,1).date()
+
+ANCHOR_INDEX = min(range(len(MONTHS)),
+                   key=lambda i: abs((MONTHS[i]-ANCHOR_DATE).days))
+
 AYLAR = [
     "Muharrem","Safer","Rebiülevvel","Rebiülahir",
     "Cemaziyelevvel","Cemaziyelahir","Recep",
@@ -91,15 +95,7 @@ AYLAR = [
 ]
 
 # =========================
-# ANCHOR (SADECE 1 NOKTA)
-# =========================
-ANCHOR_DATE = datetime(2025,3,1).date()
-
-ANCHOR_INDEX = min(range(len(MONTHS)),
-                   key=lambda i: abs((MONTHS[i]-ANCHOR_DATE).days))
-
-# =========================
-# HİCRİ HESAP
+# HİCRİ
 # =========================
 def get_hijri(date):
 
@@ -110,62 +106,74 @@ def get_hijri(date):
             idx = i
 
     diff = idx - ANCHOR_INDEX
-
     ay = (8 + diff) % 12
-    start = MONTHS[idx]
 
+    start = MONTHS[idx]
     gun = (date - start).days + 1
 
     return gun, AYLAR[ay]
 
 # =========================
-# YIL ANALİZ
+# TEST DATA
 # =========================
-def analyze_year(year):
-
-    ramazan = None
-    zilhicce = None
-
-    for i,m in enumerate(MONTHS):
-
-        diff = i - ANCHOR_INDEX
-        ay = (8 + diff) % 12
-
-        if ay == 8 and m.year == year:
-            ramazan = m
-
-        if ay == 11 and m.year == year:
-            zilhicce = m
-
-    return {
-        "ramazan": ramazan,
-        "bayram": ramazan + timedelta(days=29),
-        "arefe": zilhicce + timedelta(days=8),
-        "kurban": zilhicce + timedelta(days=9)
-    }
+REAL = {
+    2020:"2020-04-24",
+    2021:"2021-04-13",
+    2022:"2022-04-02",
+    2023:"2023-03-23",
+    2024:"2024-03-11",
+    2025:"2025-03-01",
+}
 
 # =========================
-# BOT
+# TEST
 # =========================
-async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    today = datetime.now(timezone.utc).date()
-    g,a = get_hijri(today)
+    text = "📊 TEST\n\n"
+    total = 0
 
-    await update.message.reply_text(f"📅 {today}\nHicri: {g} {a}")
+    for y, real_str in REAL.items():
 
-async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        real = datetime.fromisoformat(real_str).date()
 
-    y = int(context.args[0])
-    d = analyze_year(y)
+        model = None
 
-    text = f"{y}\nRamazan: {d['ramazan']}\nBayram: {d['bayram']}\nArefe: {d['arefe']}"
+        for i,m in enumerate(MONTHS):
+            diff = i - ANCHOR_INDEX
+            ay = (8 + diff) % 12
+
+            if ay == 8 and m.year == y:
+                model = m
+
+        diff = (model - real).days
+        total += abs(diff)
+
+        text += f"{y}: {diff}\n"
+
+    text += f"\nToplam hata: {total}"
+
     await update.message.reply_text(text)
 
+# =========================
+# COMMANDS
+# =========================
+async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now(timezone.utc).date()
+    g,a = get_hijri(today)
+    await update.message.reply_text(f"{today}\nHicri: {g} {a}")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🚀 AKTİF\n/bugun\n/test")
+
+# =========================
+# APP
+# =========================
 app = ApplicationBuilder().token(TOKEN).build()
 
+app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("yil", yil))
+app.add_handler(CommandHandler("test", test))
 
-print("🚀 GERÇEK HİLAL MOTOR AKTİF")
+print("🚀 TAM SİSTEM AKTİF")
 app.run_polling()
