@@ -1,159 +1,162 @@
 import os
 import logging
-import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from skyfield.api import load, Topos
-from skyfield import almanac
+import matplotlib.pyplot as plt
 
+# 🔐 TOKEN
 TOKEN = os.getenv("TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
+# 🌍 Skyfield yükle
 ts = load.timescale()
 eph = load('de421.bsp')
 
 earth = eph['earth']
 moon = eph['moon']
+sun = eph['sun']
 
-months = [
-    "Muharrem","Safer","Rebiülevvel","Rebiülahir",
-    "Cemaziyelevvel","Cemaziyelahir","Recep","Şaban",
-    "Ramazan","Şevval","Zilkade","Zilhicce"
-]
+# 🌙 elongation hesap
+def elongation(t):
+    e = earth.at(t)
+    m = e.observe(moon).apparent()
+    s = e.observe(sun).apparent()
+    return m.separation_from(s).degrees
 
-# 🌇 SUNSET
-def get_sunset(lat, lon, date):
-    try:
-        location = Topos(latitude_degrees=lat, longitude_degrees=lon)
+# 🌙 görünürlük fonksiyonu
+def visibility(lat, lon, date):
+    t = ts.utc(date.year, date.month, date.day, 18)
 
-        t0 = ts.utc(date.year, date.month, date.day)
-        t1 = ts.utc(date.year, date.month, date.day + 1)
+    loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
+    alt, az, dist = loc.at(t).observe(moon).apparent().altaz()
 
-        f = almanac.sunrise_sunset(eph, location)
-        times, events = almanac.find_discrete(t0, t1, f)
+    alt = alt.degrees
+    el = elongation(t)
 
-        for t, e in zip(times, events):
-            if e == 0:
-                return t
+    if el < 7 or alt < 0:
+        return 0  # görünmez
+    elif alt < 5:
+        return 1  # çok zor
+    elif alt < 10:
+        return 2  # zor
+    else:
+        return 3  # görünür
 
-        return None
-    except:
-        return None
+# 🌍 HARİTA OLUŞTUR
+def generate_map(date):
+    lats = []
+    lons = []
+    colors = []
 
-# 🌙 HİLAL
-def visible(lat, lon, date):
-    t = get_sunset(lat, lon, date)
+    for lat in range(-60, 61, 5):
+        for lon in range(-180, 181, 5):
+            v = visibility(lat, lon, date)
 
-    if t is None:
-        return False
+            lats.append(lat)
+            lons.append(lon)
 
-    try:
-        loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
-        alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
+            if v == 0:
+                colors.append("black")
+            elif v == 1:
+                colors.append("red")
+            elif v == 2:
+                colors.append("orange")
+            else:
+                colors.append("green")
 
-        return alt.degrees > 5
-    except:
-        return False
+    plt.figure(figsize=(12,6))
+    plt.scatter(lons, lats, c=colors, s=10)
 
-# 🌍 İLK GÖRÜLEN
-def first_visibility(date):
-    for lon in range(-20, 60, 5):
-        for lat in range(-20, 40, 5):
-            if visible(lat, lon, date):
-                return True
-    return False
+    plt.title("Hilal Görünürlük Haritası")
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
 
-# 📅 AY BAŞLANGICI
-def find_month_start(base_date):
-    for i in range(-2, 3):
-        d = base_date + timedelta(days=i)
-        if first_visibility(d):
-            return d
-    return base_date
+    file = "/tmp/hilal_map.png"
+    plt.savefig(file)
+    plt.close()
 
-# 📅 YIL TAKVİMİ
-def generate_year(year):
-    results = []
-    current = datetime(year, 1, 1).date()
-    start = find_month_start(current)
+    return file
 
-    for _ in range(12):
-        results.append(start)
-        start = find_month_start(start + timedelta(days=29))
+# 🌍 ÜLKE ANALİZİ
+def country_analysis(date):
+    countries = {
+        "🇸🇦 Suudi Arabistan": (21.4, 39.8),
+        "🇹🇷 Türkiye": (39.0, 35.0),
+        "🇮🇷 İran": (35.0, 51.0),
+        "🇦🇫 Afganistan": (34.5, 69.2),
+    }
 
-    return results
+    result = ""
 
-# 📅 TAKVİM
-async def send_year(update, year):
-    data = generate_year(year)
+    for name, (lat, lon) in countries.items():
+        v = visibility(lat, lon, date)
 
-    msg = f"📅 {year} Hicri Takvim\n\n"
+        if v == 0:
+            durum = "❌ Görünmez"
+        elif v == 1:
+            durum = "⚠️ Çok zor"
+        elif v == 2:
+            durum = "⚠️ Zor"
+        else:
+            durum = "✅ Görülebilir"
 
-    for i, d in enumerate(data):
-        msg += f"{months[i]} → {d}\n"
+        result += f"{name}: {durum}\n"
 
-    msg += f"\n🌙 Ramazan: {data[8]}"
+    return result
+
+# 🚀 /harita
+async def harita(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    date = datetime.now(timezone.utc).date()
+    file = generate_map(date)
+
+    await update.message.reply_photo(photo=open(file, "rb"))
+
+# 🚀 /ulke
+async def ulke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    date = datetime.now(timezone.utc).date()
+    msg = "🌍 ÜLKE ANALİZİ\n\n"
+    msg += country_analysis(date)
 
     await update.message.reply_text(msg)
 
-# 🌍 ANALİZ
-async def send_analysis(update):
-    today = datetime.now(timezone.utc).date()
+# 🚀 /hilal
+async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    date = datetime.now(timezone.utc).date()
 
-    msg = "🌍 3 GÜNLÜK HİLAL ANALİZİ\n\n"
+    v = visibility(21.4, 39.8, date)
 
-    for i in [-1, 0, 1]:
-        d = today + timedelta(days=i)
-
-        if first_visibility(d):
-            msg += f"{d} → 🌙 Görülebilir\n"
-        else:
-            msg += f"{d} → ❌ Görünmez\n"
+    if v == 0:
+        msg = "❌ Hilal görünmez"
+    elif v == 1:
+        msg = "⚠️ Çok zor"
+    elif v == 2:
+        msg = "⚠️ Zor"
+    else:
+        msg = "✅ Hilal görülebilir"
 
     await update.message.reply_text(msg)
 
 # 🚀 START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌙 Sistem aktif\n\n"
-        "👉 2027 yaz\n"
-        "👉 analiz yaz"
+        "🌙 HİLAL ANALİZ BOTU\n\n"
+        "/harita → dünya haritası\n"
+        "/ulke → ülke analizi\n"
+        "/hilal → genel durum"
     )
-
-# 🤖 SMART
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-
-    print("GELEN:", text)
-
-    if "analiz" in text:
-        await send_analysis(update)
-        return
-
-    match = re.search(r'\d{4}', text)
-    if match:
-        year = int(match.group())
-        if 1900 < year < 2100:
-            await send_year(update, year)
-            return
-
-    await update.message.reply_text("❗ 2027 veya analiz yaz")
 
 # 🚀 APP
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT, handle_message))
+app.add_handler(CommandHandler("harita", harita))
+app.add_handler(CommandHandler("ulke", ulke))
+app.add_handler(CommandHandler("hilal", hilal))
 
-print("BOT AKTİF 🚀")
+print("Bot aktif 🚀")
 app.run_polling()
