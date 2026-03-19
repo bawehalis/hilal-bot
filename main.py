@@ -8,7 +8,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
-TOKEN = os.getenv("TOKEN")
+# 🔥 TOKEN (ENV yoksa buraya yaz)
+TOKEN = os.getenv("TOKEN") or "BURAYA_TOKEN_YAZ"
+
 logging.basicConfig(level=logging.INFO)
 
 ts = load.timescale()
@@ -19,7 +21,7 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# DATASET (TEST)
+# DATASET
 # =========================
 REAL_RAMAZAN = {
     2000: "2000-11-27",
@@ -154,14 +156,14 @@ def get_hijri(date):
     return gun, AYLAR[ay]
 
 # =========================
-# YIL ANALİZ
+# YIL ANALİZ (FIXED)
 # =========================
 def analyze_year(year):
 
     target = datetime(year,6,1).date()
 
-    ramazan = []
-    zilhicce = []
+    ramazan_list = []
+    zilhicce_list = []
 
     for i,m in enumerate(MONTHS):
 
@@ -169,15 +171,26 @@ def analyze_year(year):
         ay = (8 + diff) % 12
 
         if ay == 8:
-            ramazan.append(m)
+            ramazan_list.append(m)
 
         if ay == 11:
-            zilhicce.append(m)
+            zilhicce_list.append(m)
 
-    ramazan = min(ramazan, key=lambda x: abs(x-target))
-    zilhicce = min(zilhicce, key=lambda x: abs(x-target))
+    if not ramazan_list:
+        return None
 
-    next_ram = min([x for x in ramazan if x>ramazan], default=ramazan+timedelta(days=30))
+    ramazan = min(ramazan_list, key=lambda x: abs(x-target))
+    zilhicce = min(zilhicce_list, key=lambda x: abs(x-target))
+
+    # 🔥 DÜZELTİLDİ
+    next_ram = None
+    for m in MONTHS:
+        if m > ramazan:
+            next_ram = m
+            break
+
+    if next_ram is None:
+        next_ram = ramazan + timedelta(days=30)
 
     return {
         "ramazan": ramazan,
@@ -191,7 +204,7 @@ def analyze_year(year):
 # =========================
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    text = "📊 25 YIL TEST\n\n"
+    text = "📊 TEST\n\n"
 
     total_error = 0
     exact = 0
@@ -210,7 +223,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text += f"{year}: {diff} ❗\n"
 
-    text += f"\n🎯 {exact}/26 doğru"
+    text += f"\n🎯 {exact}/26"
     text += f"\n📉 hata: {total_error}"
 
     await update.message.reply_text(text)
@@ -220,13 +233,10 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(timezone.utc).date()
-
     g,a = get_hijri(today)
-
     await update.message.reply_text(f"Miladi: {today}\nHicri: {g} {a}")
 
 async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     y = int(context.args[0])
     d = analyze_year(y)
 
@@ -242,5 +252,5 @@ app.add_handler(CommandHandler("bugun", bugun))
 app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 
-print("🚀 TESTLİ AKTİF")
+print("🚀 FULL AKTİF")
 app.run_polling()
