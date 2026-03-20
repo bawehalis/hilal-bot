@@ -3,7 +3,6 @@ import logging
 import math
 import asyncio
 from datetime import datetime, timedelta, timezone, date
-from functools import lru_cache
 
 from telegram import Update
 from telegram.ext import (
@@ -20,11 +19,8 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise EnvironmentError("TOKEN env var missing")
 
-# ══════════════════════════════════════════════
-# LAZY LOAD — hicbir sey baslatma aninda yuklenmez
-# ══════════════════════════════════════════════
-_ts   = None
-_eph  = None
+_ts    = None
+_eph   = None
 _earth = None
 _moon  = None
 _sun   = None
@@ -32,7 +28,6 @@ _sun   = None
 def get_skyfield():
     global _ts, _eph, _earth, _moon, _sun
     if _ts is None:
-        logger.info("Skyfield yukleniyor...")
         _ts = load.timescale()
         try:
             _eph = load("de421.bsp")
@@ -42,12 +37,8 @@ def get_skyfield():
         _earth = _eph["earth"]
         _moon  = _eph["moon"]
         _sun   = _eph["sun"]
-        logger.info("Skyfield yuklendi.")
     return _ts, _eph, _earth, _moon, _sun
 
-# ══════════════════════════════════════════════
-# CACHE — hesaplanan veriler saklanir
-# ══════════════════════════════════════════════
 _new_moons_cache = None
 _months_cache    = None
 _anchor_cache    = None
@@ -65,7 +56,6 @@ def get_new_moons():
         for t, p in zip(times, phases)
         if p == 0
     ]
-    logger.info("%d yeni ay hesaplandi.", len(_new_moons_cache))
     return _new_moons_cache
 
 def get_months():
@@ -74,7 +64,13 @@ def get_months():
         return _months_cache
     logger.info("Takvim insa ediliyor...")
     new_moons = get_new_moons()
-    _months_cache = sorted([find_month_start(nm) for nm in new_moons])
+    months = []
+    prev_start = None
+    for nm in new_moons:
+        start = find_month_start(nm, prev_start)
+        months.append(start)
+        prev_start = start
+    _months_cache = sorted(months)
     logger.info("Takvim hazir: %d ay.", len(_months_cache))
     return _months_cache
 
@@ -89,9 +85,6 @@ def get_anchor():
     _anchor_cache = (anchor_index, muharrem_1446)
     return _anchor_cache
 
-# ══════════════════════════════════════════════
-# KONUMLAR
-# ══════════════════════════════════════════════
 GOZLEM_NOKTALARI = {
     "Mekke":    wgs84.latlon(21.4225, 39.8262),
     "Medine":   wgs84.latlon(24.4672, 39.6151),
@@ -103,9 +96,6 @@ GOZLEM_NOKTALARI = {
     "Karaci":   wgs84.latlon(24.8607, 67.0011),
 }
 
-# ══════════════════════════════════════════════
-# ASTRONOMİK FONKSİYONLAR
-# ══════════════════════════════════════════════
 def get_sunset_utc(loc, year, month, day):
     ts, eph, earth, moon, sun = get_skyfield()
     try:
@@ -127,9 +117,9 @@ def odeh_q(alt_deg, elong_deg):
 
 def evaluate_location(loc, check_date, nm):
     ts, eph, earth, moon, sun = get_skyfield()
-    sunset_h  = get_sunset_utc(loc, check_date.year, check_date.month, check_date.day)
-    best_q    = -99.0
-    best_alt  = -99.0
+    sunset_h   = get_sunset_utc(loc, check_date.year, check_date.month, check_date.day)
+    best_q     = -99.0
+    best_alt   = -99.0
     best_elong = 0.0
 
     for offset_min in range(15, 70, 5):
@@ -150,11 +140,13 @@ def evaluate_location(loc, check_date, nm):
         if alt_deg <= 0:
             continue
 
-        sunset_dt = datetime(check_date.year, check_date.month, check_date.day,
-                             int(sunset_h), int((sunset_h % 1) * 60),
-                             tzinfo=timezone.utc)
-        age_at_sunset = (sunset_dt - nm).total_seconds() / 3600.0
-        if age_at_sunset < 13.5:
+        # Konjunksiyondan sonra sunset aninda ay en az 13.5 saat olmali
+        sunset_dt = datetime(
+            check_date.year, check_date.month, check_date.day,
+            int(sunset_h), int((sunset_h % 1) * 60),
+            tzinfo=timezone.utc
+        )
+        if (sunset_dt - nm).total_seconds() / 3600.0 < 13.5:
             continue
 
         q = odeh_q(alt_deg, elong)
@@ -182,16 +174,38 @@ def hilal_gorunur_global(check_date, nm):
 
     return gorunur, best_q, best_loc, detaylar
 
-def find_month_start(nm):
-    d1 = nm.date() + timedelta(days=1)
-    gorunur, q, loc, _ = hilal_gorunur_global(d1, nm)
-    if gorunur:
-        return d1
-    return d1 + timedelta(days=1)
+def find_month_start(nm, prev_month_start=None):
+    """
+    Dogru Hicri takvim mantiği:
 
-# ══════════════════════════════════════════════
-# HİCRİ HESAP
-# ══════════════════════════════════════════════
+    Onceki ayin 29. gunu aksami hilal ara.
+    Gorunurse: yeni ay 30. gunün ertesi baslar (onceki ay 29 gun).
+    Gorunmezse: onceki ay 30 gune tamamlanir, yeni ay 31. gun baslar.
+
+    Eger prev_month_start bilinmiyorsa (ilk ay):
+    Konjunksiyon + 1 gun = D1, konjunksiyon + 2 gun = D2 mantigi.
+    """
+    if prev_month_start is None:
+        # Bootstrap: ilk ay icin klasik D1/D2 mantigi
+        d1 = nm.date() + timedelta(days=1)
+        gorunur, q, loc, _ = hilal_gorunur_global(d1, nm)
+        if gorunur:
+            return d1
+        return d1 + timedelta(days=1)
+
+    # Onceki ayin 29. gunu
+    gun29 = prev_month_start + timedelta(days=28)  # 0-index: gun 1 = prev_start, gun 29 = +28
+
+    # O gece hilal gorünür mü?
+    gorunur, q, loc, _ = hilal_gorunur_global(gun29, nm)
+
+    if gorunur:
+        # Hilal goruldu: yeni ay gun29'un ertesi gunü baslar
+        return gun29 + timedelta(days=1)
+    else:
+        # Hilal gorulmedi: ay 30 gune tamamlandi
+        return gun29 + timedelta(days=2)
+
 AYLAR = [
     "Muharrem", "Safer", "Rebiulevvel", "Rebiulahir",
     "Cemaziyelevvel", "Cemaziyelahir", "Recep",
@@ -262,9 +276,6 @@ def find_month_date(year_miladi, ay_index):
             return m, i
     return None, None
 
-# ══════════════════════════════════════════════
-# REFERANS VERİLERİ
-# ══════════════════════════════════════════════
 RAMAZAN_TURKIYE = {
     1995:date(1995,2,1),  1996:date(1996,1,22), 1997:date(1997,1,11),
     1998:date(1998,12,20),1999:date(1999,12,9), 2000:date(2000,11,27),
@@ -307,9 +318,6 @@ RAMAZAN_IRAN = {
     2025:date(2025,3,1),
 }
 
-# ══════════════════════════════════════════════
-# YARDIMCI
-# ══════════════════════════════════════════════
 def parse_year(args, min_y=1995, max_y=2040):
     if not args:
         raise ValueError("Lutfen bir yil girin.")
@@ -338,22 +346,11 @@ def fark_str(bot, ref):
     d = (bot - ref).days
     return ("+" if d >= 0 else "") + str(d)
 
-async def run_blocking(func, *args):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, func, *args)
+def cache_hazir():
+    return _months_cache is not None
 
-# ══════════════════════════════════════════════
-# ARKA PLANDA TAKVİM HAZIRLAMA
-# ══════════════════════════════════════════════
-async def warm_up_cache(app):
-    logger.info("Takvim arka planda hazirlanıyor...")
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, get_months)
-    logger.info("Takvim hazir, bot tam kapasitede calisiyor.")
+HAZIR_DEGIL_MSG = "Takvim hazırlaniyor, lutfen 1-2 dakika bekleyip tekrar deneyin."
 
-# ══════════════════════════════════════════════
-# KOMUTLAR
-# ══════════════════════════════════════════════
 HELP_TEXT = (
     "HICRI TAKVIM BOTU\n\n"
     "/bugun                          Bugunun Hicri tarihi\n"
@@ -378,10 +375,9 @@ async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT)
 
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     today = datetime.now(timezone.utc).date()
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen 30-60 saniye bekleyin ve tekrar deneyin...")
-        return
     gun, ay_adi, ay_idx, hicri_yil = get_hijri(today)
     ozel = OZEL.get((ay_idx, gun), "")
     text = "Bugun: " + str(today) + "\nHicri: " + str(gun) + " " + ay_adi + " " + str(hicri_yil)
@@ -394,9 +390,8 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
         year = parse_year(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     months = get_months()
     anchor_index, muharrem_1446 = get_anchor()
     lines = [str(year) + " Yili Hicri Ay Baslari\n"]
@@ -418,9 +413,8 @@ async def ramazan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         year = parse_year(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     m, _ = find_month_date(year, 8)
     if m:
         text = ("Ramazan " + str(year) + "\n"
@@ -436,9 +430,8 @@ async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         year = parse_year(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     m, _ = find_month_date(year, 11)
     if m:
         text = ("Kurban Bayrami " + str(year) + "\n"
@@ -457,9 +450,8 @@ async def bayramlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         year = parse_year(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     LISTE = [
         (0,10,"Asure"),(1,12,"Mevlid"),(6,27,"Mirac"),(7,15,"Berat"),
         (8,1,"Ramazan Baslangici"),(8,27,"Kadir (~)"),(9,1,"Ramazan Bayrami 1"),
@@ -480,9 +472,8 @@ async def bayramlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 async def kacgun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     today = datetime.now(timezone.utc).date()
     if context.args:
         try:
@@ -506,10 +497,9 @@ async def kacgun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_error(update, "Hesaplanamadi.")
 
 async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now(timezone.utc).date()
     if _new_moons_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
+    today = datetime.now(timezone.utc).date()
     nm = None
     for t in reversed(_new_moons_cache):
         if t.date() <= today:
@@ -530,11 +520,11 @@ async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         durum = "Gorunmez"
     lines = ["Hilal Durumu - " + str(today) + "\n",
-             "Yeni Ay    : " + str(nm.date()),
-             "Ay Yasi    : " + str(int(age_hours)) + " saat",
-             "En iyi     : " + best_loc,
-             "ODEH-q     : " + str(round(best_q, 3)),
-             "Durum      : " + durum,
+             "Yeni Ay : " + str(nm.date()),
+             "Ay Yasi : " + str(int(age_hours)) + " saat",
+             "En iyi  : " + best_loc,
+             "ODEH-q  : " + str(round(best_q, 3)),
+             "Durum   : " + durum,
              "\nKonum Detaylari:"]
     for loc_name, p in detaylar.items():
         if p["alt"] > 0:
@@ -548,9 +538,8 @@ async def miladiden(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tarih = parse_date_arg(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     gun, ay_adi, ay_idx, hicri_yil = get_hijri(tarih)
     if gun == 0:
         return await reply_error(update, "Hesaplanamadi.")
@@ -571,9 +560,8 @@ async def hicridenmiladi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hicri_yil = int(context.args[2])
     except ValueError:
         return await reply_error(update, "Gun ve yil sayi olmali.")
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     ay_idx = None
     for i in range(len(AYLAR)):
         if AYLAR[i].lower() == ay_adi.lower() or AYLAR_TR[i].lower() == ay_adi.lower():
@@ -594,9 +582,8 @@ async def hicridenmiladi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     await update.message.reply_text("Analiz hesaplaniyor, lutfen bekleyin...")
     lines = ["RAMAZAN ANALIZI 1995-2025\n"
              "Bot | TR | SA | IR | [TR|SA|IR]\n"
@@ -636,9 +623,8 @@ async def karsilastir(update: Update, context: ContextTypes.DEFAULT_TYPE):
         year = parse_year(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     bot_m, _ = find_month_date(year, 8)
     tr = RAMAZAN_TURKIYE.get(year)
     sa = RAMAZAN_SUUDI.get(year)
@@ -655,9 +641,8 @@ async def ayuzunluklari(update: Update, context: ContextTypes.DEFAULT_TYPE):
         year = parse_year(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    if _months_cache is None:
-        await update.message.reply_text("Takvim hazırlaniyor, lutfen bekleyin...")
-        return
+    if not cache_hazir():
+        return await update.message.reply_text(HAZIR_DEGIL_MSG)
     months = get_months()
     anchor_index, muharrem_1446 = get_anchor()
     lines = [str(year) + " Ay Uzunluklari\n"]
@@ -676,6 +661,12 @@ async def ayuzunluklari(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("Bu yil icin veri bulunamadi.")
     await update.message.reply_text("\n".join(lines))
 
+async def warm_up_cache(app):
+    logger.info("Takvim arka planda hazirlanıyor...")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, get_months)
+    logger.info("Takvim hazir.")
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Hata: %s", context.error, exc_info=True)
     if isinstance(update, Update) and update.message:
@@ -684,12 +675,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def bilinmeyen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bilinmeyen komut. /yardim yazin.")
 
-# ══════════════════════════════════════════════
-# MAIN
-# ══════════════════════════════════════════════
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start",          start))
     app.add_handler(CommandHandler("yardim",         yardim))
     app.add_handler(CommandHandler("bugun",          bugun))
@@ -706,12 +693,8 @@ def main():
     app.add_handler(CommandHandler("ayuzunluklari",  ayuzunluklari))
     app.add_handler(MessageHandler(filters.COMMAND,  bilinmeyen))
     app.add_error_handler(error_handler)
-
-    # Bot baslar baslamaz anında hazir
-    # Takvim arka planda sessizce hazirlanir
     app.post_init = warm_up_cache
-
-    logger.info("Bot baslatildi — aninda hazir, takvim arka planda yukleniyor.")
+    logger.info("Bot baslatildi.")
     app.run_polling()
 
 if __name__ == "__main__":
