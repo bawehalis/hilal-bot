@@ -5,34 +5,20 @@ import numpy as np
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-from skyfield.api import load, Topos
-from skyfield.almanac import find_discrete, moon_phases
-
 # =========================
 # CONFIG
 # =========================
 TOKEN = os.getenv("TOKEN")
 if not TOKEN:
-    raise ValueError("TOKEN env bulunamadı")
-
-THRESHOLD = 0.6
-
-LOCATIONS = {
-    "MECCA": Topos(21.3891, 39.8579),
-    "ANKARA": Topos(39.9334, 32.8597),
-    "TEHRAN": Topos(35.6892, 51.3890),
-}
-
-WEIGHTS = {
-    "MECCA": 0.5,
-    "ANKARA": 0.3,
-    "TEHRAN": 0.2
-}
+    raise ValueError("TOKEN bulunamadı")
 
 ANCHOR_AREFE = datetime.date(1995, 5, 9)
 
+# Hicri artık yıl indexleri
+LEAP_YEARS = [2,5,7,10,13,16,18,21,24,26,29]
+
 # =========================
-# DATASET (örnek)
+# GERÇEK DATA (örnek)
 # =========================
 REAL_EVENTS = {
     2023: {"ramadan": datetime.date(2023,3,23), "eid_fitr": datetime.date(2023,4,21), "eid_adha": datetime.date(2023,6,28)},
@@ -41,105 +27,45 @@ REAL_EVENTS = {
 }
 
 # =========================
-# SKYFIELD INIT
-# =========================
-ts = load.timescale()
-eph = load('de421.bsp')
-
-earth = eph['earth']
-moon = eph['moon']
-sun = eph['sun']
-
-# =========================
-# ASTRONOMİ
+# HİCRİ YIL HESAP
 # =========================
 
-def moon_age(date):
-    try:
-        t0 = ts.utc(date.year, date.month, date.day)
-        t1 = ts.utc(date.year, date.month, date.day + 2)
+def is_leap(year):
+    cycle = (year - 1995) % 30
+    return cycle in LEAP_YEARS
 
-        times, phases = find_discrete(t0, t1, moon_phases(eph))
-
-        for t, p in zip(times, phases):
-            if p == 0:
-                nm = t.utc_datetime()
-                delta = datetime.datetime.combine(date, datetime.time()) - nm
-                return abs(delta.total_seconds()) / 3600
-    except:
-        pass
-
-    return 24
-
-
-def get_params(date, location):
-    try:
-        t = ts.utc(date.year, date.month, date.day, 18)
-
-        obs = earth + location
-        ast = obs.at(t).observe(moon)
-        alt, az, _ = ast.apparent().altaz()
-
-        sun_ast = obs.at(t).observe(sun)
-        elong = ast.separation_from(sun_ast).degrees
-
-        return alt.degrees, elong
-    except:
-        return 0, 0
-
-
-def score(age, alt, elong):
-    a = min(age / 24, 1)
-    b = min(elong / 12, 1)
-    c = min(max(alt, 0) / 10, 1)
-    d = min(age / 30, 1)
-
-    return 0.35*a + 0.25*b + 0.20*c + 0.20*d
-
-
-def refine_start(date):
-    # astronomi ile ince ayar
-    for i in range(2):
-        d = date + datetime.timedelta(days=i)
-        total = 0
-
-        for name, loc in LOCATIONS.items():
-            age = moon_age(d)
-            alt, elong = get_params(d, loc)
-            total += score(age, alt, elong) * WEIGHTS[name]
-
-        if total >= THRESHOLD:
-            return d
-
-    return date
-
-# =========================
-# AREFE ANCHOR MODEL
-# =========================
 
 def estimate_arefe(year):
-    diff = year - 1995
-    days = int(diff * 354.367)
-    return ANCHOR_AREFE + datetime.timedelta(days=days)
+    date = ANCHOR_AREFE
+
+    if year >= 1995:
+        for y in range(1995, year):
+            date += datetime.timedelta(days=355 if is_leap(y) else 354)
+    else:
+        for y in range(year, 1995):
+            date -= datetime.timedelta(days=355 if is_leap(y) else 354)
+
+    return date
 
 # =========================
 # HİCRİ OLAYLAR
 # =========================
 
 def get_events(year):
+
     arefe = estimate_arefe(year)
 
     # Zilhicce başlangıcı
     dh_start = arefe - datetime.timedelta(days=8)
 
-    # Ramazan approx (9 ay geri)
+    # Ramazan (9 ay geri ≈ 266 gün)
     ramadan = dh_start - datetime.timedelta(days=266)
-    ramadan = refine_start(ramadan)
 
-    # Fitr
+    # küçük düzeltme (29/30 farkı)
+    ramadan += datetime.timedelta(days=np.random.choice([-1,0,1]))
+
+    # Bayramlar
     fitr = ramadan + datetime.timedelta(days=29)
-
-    # Kurban
     adha = dh_start + datetime.timedelta(days=9)
 
     return {
@@ -185,73 +111,36 @@ def analyze_30():
     return report
 
 # =========================
-# ML TRAIN
-# =========================
-
-def loss():
-    total = 0
-    count = 0
-
-    for y in REAL_EVENTS:
-        pred = get_events(y)
-        real = REAL_EVENTS[y]
-
-        total += abs((pred["ramadan"] - real["ramadan"]).days)
-        total += abs((pred["eid_fitr"] - real["eid_fitr"]).days)
-        total += abs((pred["eid_adha"] - real["eid_adha"]).days)
-
-        count += 3
-
-    return total / count if count else 999
-
-
-def train():
-    global THRESHOLD
-
-    best = loss()
-
-    for _ in range(30):
-        new_t = THRESHOLD + np.random.uniform(-0.02,0.02)
-        old_t = THRESHOLD
-
-        THRESHOLD = new_t
-        l = loss()
-
-        if l < best:
-            best = l
-        else:
-            THRESHOLD = old_t
-
-    return best
-
-# =========================
 # TELEGRAM
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🌙 Sistem aktif\n/ay\n/events\n/analyze\n/train")
-
-async def ay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    y,m,d = map(int, context.args[0].split("-"))
-    date = datetime.date(y,m,d)
-    result = refine_start(date)
-    await update.message.reply_text(str(result))
+    await update.message.reply_text(
+        "🌙 Hicri Sistem\n\n"
+        "/events 2025\n"
+        "/analyze"
+    )
 
 async def events(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    y = int(context.args[0])
-    e = get_events(y)
+    try:
+        year = int(context.args[0])
+        e = get_events(year)
 
-    msg = f"{y}\nRamazan:{e['ramadan']}\nFitr:{e['eid_fitr']}\nArefe:{e['arefe']}\nAdha:{e['eid_adha']}"
-    await update.message.reply_text(msg)
+        msg = f"📅 {year}\n"
+        msg += f"🌙 Ramazan: {e['ramadan']}\n"
+        msg += f"🎉 Fitr: {e['eid_fitr']}\n"
+        msg += f"🕋 Arefe: {e['arefe']}\n"
+        msg += f"🐑 Kurban: {e['eid_adha']}"
+
+        await update.message.reply_text(msg)
+
+    except:
+        await update.message.reply_text("Format: /events 2025")
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = analyze_30()
-    for i in range(0,len(r),3500):
+    for i in range(0, len(r), 3500):
         await update.message.reply_text(r[i:i+3500])
-
-async def train_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    l = train()
-    await update.message.reply_text(f"Training OK\nLoss:{round(l,3)}\nT:{round(THRESHOLD,3)}")
 
 # =========================
 # MAIN
@@ -261,10 +150,8 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ay", ay))
     app.add_handler(CommandHandler("events", events))
     app.add_handler(CommandHandler("analyze", analyze))
-    app.add_handler(CommandHandler("train", train_cmd))
 
     print("Bot çalışıyor...")
     app.run_polling()
