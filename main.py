@@ -19,11 +19,17 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
+# ANCHOR (KESİN DOĞRU)
+# =========================
+ANCHOR_DATE = datetime(2026,3,20).date()  # 1 Şevval
+ANCHOR_MONTH_INDEX = 9  # Şevval
+
+# =========================
 # NEW MOONS
 # =========================
 def get_new_moons():
     t0 = ts.utc(2000,1,1)
-    t1 = ts.utc(2035,12,31)
+    t1 = ts.utc(2040,12,31)
 
     times, phases = find_discrete(t0, t1, moon_phases(eph))
 
@@ -36,7 +42,7 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL MODELİ (NET)
+# HİLAL MODELİ
 # =========================
 def visible(date, nm):
 
@@ -54,6 +60,7 @@ def visible(date, nm):
 
     alt = alt.degrees
 
+    # 🔥 STABLE MODEL
     if alt >= 4 and elong >= 5:
         return True
 
@@ -66,40 +73,71 @@ def visible(date, nm):
     return False
 
 # =========================
-# 🔥 CHAIN MONTH GENERATION
+# AY BUL (TEK)
+# =========================
+def find_next_month(current):
+
+    nm = min([x for x in NEW_MOONS if x.date() > current])
+
+    for i in range(1,4):
+        d = (nm + timedelta(days=i)).date()
+
+        if visible(d, nm):
+            # erkense kaydır
+            if (d - nm.date()).days == 1:
+                return d + timedelta(days=1)
+            return d
+
+    return (nm + timedelta(days=2)).date()
+
+def find_prev_month(current):
+
+    nm = max([x for x in NEW_MOONS if x.date() < current])
+
+    for i in range(3,0,-1):
+        d = (nm + timedelta(days=i)).date()
+
+        if visible(d, nm):
+            if (d - nm.date()).days == 1:
+                return d + timedelta(days=1)
+            return d
+
+    return (nm + timedelta(days=2)).date()
+
+# =========================
+# 🔥 CHAIN TAKVİM
 # =========================
 def build_calendar():
 
-    months = []
+    months = {ANCHOR_DATE: ANCHOR_MONTH_INDEX}
 
-    # ilk ay (anchor)
-    current = datetime(2025,3,1).date()
+    # ileri
+    current = ANCHOR_DATE
+    idx = ANCHOR_MONTH_INDEX
 
-    months.append(current)
+    while current < datetime(2035,1,1).date():
 
-    while current < datetime(2035,12,1).date():
+        nxt = find_next_month(current)
+        idx = (idx + 1) % 12
 
-        # sonraki new moon
-        nm = min([x for x in NEW_MOONS if x.date() > current])
+        months[nxt] = idx
+        current = nxt
 
-        next_start = None
+    # geri
+    current = ANCHOR_DATE
+    idx = ANCHOR_MONTH_INDEX
 
-        for i in range(1,4):
-            d = (nm + timedelta(days=i)).date()
+    while current > datetime(2000,1,1).date():
 
-            if visible(d, nm):
-                next_start = d
-                break
+        prev = find_prev_month(current)
+        idx = (idx - 1) % 12
 
-        if not next_start:
-            next_start = (nm + timedelta(days=2)).date()
+        months[prev] = idx
+        current = prev
 
-        months.append(next_start)
-        current = next_start
+    return sorted(months.items())
 
-    return months
-
-MONTHS = build_calendar()
+CALENDAR = build_calendar()
 
 # =========================
 # HİCRİ
@@ -110,56 +148,21 @@ AYLAR = [
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-ANCHOR_DATE = datetime(2025,3,1).date()
-ANCHOR_INDEX = 0
-
-# =========================
-# HİCRİ BUL
-# =========================
 def get_hijri(date):
 
-    idx = None
+    current = None
 
-    for i,m in enumerate(MONTHS):
-        if m <= date:
-            idx = i
+    for d, idx in CALENDAR:
+        if d <= date:
+            current = (d, idx)
 
-    if idx is None:
+    if not current:
         return 0,"?"
 
-    ay = (8 + idx) % 12
-
-    start = MONTHS[idx]
+    start, idx = current
     gun = (date - start).days + 1
 
-    return gun, AYLAR[ay]
-
-# =========================
-# YIL ANALİZ
-# =========================
-def analyze_year(year):
-
-    ramazan = None
-    zilhicce = None
-
-    for i,m in enumerate(MONTHS):
-
-        ay = (8 + i) % 12
-
-        if m.year == year:
-
-            if ay == 8:
-                ramazan = m
-
-            if ay == 11:
-                zilhicce = m
-
-    return {
-        "ramazan": ramazan,
-        "bayram": ramazan + timedelta(days=29),
-        "arefe": zilhicce + timedelta(days=8),
-        "kurban": zilhicce + timedelta(days=9)
-    }
+    return gun, AYLAR[idx]
 
 # =========================
 # BUGÜN
@@ -174,45 +177,13 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# TEST
-# =========================
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    REAL = {
-        2020:"2020-04-24",
-        2021:"2021-04-13",
-        2022:"2022-04-02",
-        2023:"2023-03-23",
-        2024:"2024-03-11",
-        2025:"2025-03-01"
-    }
-
-    text = "📊 TEST\n\n"
-    total = 0
-
-    for y, real_str in REAL.items():
-
-        real = datetime.fromisoformat(real_str).date()
-        model = analyze_year(y)["ramazan"]
-
-        diff = (model - real).days
-        total += abs(diff)
-
-        text += f"{y}: {diff}\n"
-
-    text += f"\nToplam hata: {total}"
-
-    await update.message.reply_text(text)
-
-# =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-"""🚀 GERÇEK HİCRİ MOTOR
+"""🚀 Hicri Motor (ANCHOR SYSTEM)
 
-/bugun
-/test"""
+/bugun"""
     )
 
 # =========================
@@ -222,7 +193,6 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("test", test))
 
-print("🚀 CHAIN SYSTEM AKTİF")
+print("🚀 ANCHOR + CHAIN AKTİF")
 app.run_polling()
