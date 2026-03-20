@@ -1,6 +1,5 @@
 import os
 import logging
-import numpy as np
 from datetime import datetime, timedelta, timezone
 
 from telegram import Update
@@ -10,13 +9,13 @@ from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
 # =========================
-# CONFIG
+# TOKEN
 # =========================
 TOKEN = os.getenv("TOKEN")
 logging.basicConfig(level=logging.INFO)
 
 # =========================
-# SKYFIELD
+# ASTRONOMİ
 # =========================
 ts = load.timescale()
 eph = load('de421.bsp')
@@ -26,246 +25,282 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# ANCHOR
+# NEW MOON
 # =========================
-ANCHOR_DATE = datetime(2026,3,20).date()  # 1 Şevval
-ANCHOR_MONTH_INDEX = 9
-
-# =========================
-# LOCATIONS (multi-region)
-# =========================
-LOCATIONS = [
-    Topos(21.4,39.8),   # Mekke
-    Topos(39.9,32.8),   # Ankara
-    Topos(35.7,51.4),   # Tahran
-]
-
-# =========================
-# ML PARAMS
-# =========================
-PARAMS = {
-    "ALT_MIN": 4,
-    "ELONG_MIN": 5,
-    "AGE_MIN": 12,
-    "Q_THRESHOLD": 0
-}
-
-# =========================
-# REAL DATA (expand later)
-# =========================
-REAL_STARTS = {
-    datetime(2023,3,23).date(): "Ramazan",
-    datetime(2024,3,11).date(): "Ramazan",
-    datetime(2025,3,1).date(): "Ramazan",
-}
-
-# =========================
-# NEW MOONS
-# =========================
-def get_new_moons():
-    t0 = ts.utc(2000,1,1)
-    t1 = ts.utc(2040,12,31)
+def get_new_moons(start=1995, end=2035):
+    t0 = ts.utc(start, 1, 1)
+    t1 = ts.utc(end, 12, 31)
 
     times, phases = find_discrete(t0, t1, moon_phases(eph))
 
     return [
         t.utc_datetime().replace(tzinfo=timezone.utc)
-        for t,p in zip(times, phases)
+        for t, p in zip(times, phases)
         if p == 0
     ]
 
-NEW_MOONS = get_new_moons()
-
 # =========================
-# VISIBILITY (ML + YALLOP)
+# HİLAL GÖRÜNÜRLÜK
 # =========================
-def visible(date, nm):
-
+def hilal_visible(date):
     t = ts.utc(date.year, date.month, date.day, 18)
-    results = []
 
-    for loc in LOCATIONS:
+    e = earth.at(t)
+    m = e.observe(moon).apparent()
+    s = e.observe(sun).apparent()
 
-        e = (earth + loc).at(t)
-        m = e.observe(moon).apparent()
-        s = e.observe(sun).apparent()
+    elong = m.separation_from(s).degrees
 
-        alt, _, _ = m.altaz()
-        elong = m.separation_from(s).degrees
-        alt = alt.degrees
+    loc = earth + Topos(21.4, 39.8)
+    alt, _, _ = loc.at(t).observe(moon).apparent().altaz()
 
-        age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
-
-        W = max(alt / 10, 0)
-        q = (elong - 11.8371 + 6.3226*W - 0.7319*(W**2) + 0.1018*(W**3)) / 10
-
-        score = (
-            (alt >= PARAMS["ALT_MIN"]) +
-            (elong >= PARAMS["ELONG_MIN"]) +
-            (age >= PARAMS["AGE_MIN"]) +
-            (q >= PARAMS["Q_THRESHOLD"])
-        )
-
-        results.append(score)
-
-    return sum(results)/len(results) >= 2.5
+    return alt.degrees > 5 and elong > 10
 
 # =========================
-# MONTH FINDING
+# AY BAŞLANGIÇLARI
 # =========================
-def find_next_month(current):
+def build_months():
+    new_moons = get_new_moons()
+    months = []
 
-    nm = min([x for x in NEW_MOONS if x.date() > current])
+    for nm in new_moons:
+        d1 = (nm + timedelta(days=1)).date()
+        d2 = (nm + timedelta(days=2)).date()
 
-    for i in range(1,4):
-        d = (nm + timedelta(days=i)).date()
+        if hilal_visible(d1):
+            months.append(d1)
+        else:
+            months.append(d2)
 
-        if visible(d, nm):
-            return d
+    return sorted(months)
 
-    return (nm + timedelta(days=2)).date()
+MONTHS = build_months()
 
-def find_prev_month(current):
-
-    nm = max([x for x in NEW_MOONS if x.date() < current])
-
-    for i in range(3,0,-1):
-        d = (nm + timedelta(days=i)).date()
-
-        if visible(d, nm):
-            return d
-
-    return (nm + timedelta(days=2)).date()
-
-# =========================
-# CALENDAR BUILD
-# =========================
-def build_calendar():
-
-    months = {ANCHOR_DATE: ANCHOR_MONTH_INDEX}
-
-    current = ANCHOR_DATE
-    idx = ANCHOR_MONTH_INDEX
-
-    # forward
-    while current < datetime(2035,1,1).date():
-        nxt = find_next_month(current)
-        idx = (idx + 1) % 12
-        months[nxt] = idx
-        current = nxt
-
-    # backward
-    current = ANCHOR_DATE
-    idx = ANCHOR_MONTH_INDEX
-
-    while current > datetime(2000,1,1).date():
-        prev = find_prev_month(current)
-        idx = (idx - 1) % 12
-        months[prev] = idx
-        current = prev
-
-    return sorted(months.items())
-
-CALENDAR = build_calendar()
-
-# =========================
-# HIJRI
-# =========================
 AYLAR = [
     "Muharrem","Safer","Rebiülevvel","Rebiülahir",
     "Cemaziyelevvel","Cemaziyelahir","Recep",
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-def get_hijri(date):
+# =========================
+# ANCHOR (ZİLHİCCE FIX)
+# =========================
+ANCHOR_TARGET = datetime(2025, 5, 28).date()
 
-    current = None
-
-    for d, idx in CALENDAR:
-        if d <= date:
-            current = (d, idx)
-
-    if not current:
-        return 0,"?"
-
-    start, idx = current
-    gun = (date - start).days + 1
-
-    return gun, AYLAR[idx]
+ANCHOR_INDEX = min(
+    range(len(MONTHS)),
+    key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days)
+)
 
 # =========================
-# ML LOSS
+# HİLAL SAAT FONKSİYONU
 # =========================
-def calculate_loss():
+def hilal_kontrol_saat(date, lat, lon, hour):
+    t = ts.utc(date.year, date.month, date.day, hour)
 
-    error = 0
+    loc = earth + Topos(latitude_degrees=lat, longitude_degrees=lon)
 
-    for real_date in REAL_STARTS:
-        pred = find_prev_month(real_date)
-        diff = abs((pred - real_date).days)
-        error += diff
+    e = loc.at(t)
+    m = e.observe(moon).apparent()
+    s = e.observe(sun).apparent()
 
-    return error / len(REAL_STARTS)
+    alt, _, _ = m.altaz()
+    elong = m.separation_from(s).degrees
 
-# =========================
-# TRAIN
-# =========================
-def train_model(iterations=50):
-
-    global PARAMS
-
-    best_params = PARAMS.copy()
-    best_loss = calculate_loss()
-
-    for _ in range(iterations):
-
-        new_params = {
-            "ALT_MIN": PARAMS["ALT_MIN"] + np.random.uniform(-1,1),
-            "ELONG_MIN": PARAMS["ELONG_MIN"] + np.random.uniform(-1,1),
-            "AGE_MIN": PARAMS["AGE_MIN"] + np.random.uniform(-3,3),
-            "Q_THRESHOLD": PARAMS["Q_THRESHOLD"] + np.random.uniform(-0.2,0.2),
-        }
-
-        old = PARAMS.copy()
-        PARAMS = new_params
-
-        loss = calculate_loss()
-
-        if loss < best_loss:
-            best_loss = loss
-            best_params = new_params
-        else:
-            PARAMS = old
-
-    PARAMS = best_params
-    return best_loss
+    return alt.degrees, elong
 
 # =========================
-# COMMANDS
+# BUGÜN
 # =========================
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     today = datetime.now(timezone.utc).date()
-    g,a = get_hijri(today)
+
+    for i, m in enumerate(MONTHS):
+        if m <= today:
+            current_month = m
+            current_index = i
+
+    gun = (today - current_month).days + 1
+    ay_index = (current_index - ANCHOR_INDEX + 11) % 12
 
     await update.message.reply_text(
-        f"📅 Bugün\n\nMiladi: {today}\nHicri: {g} {a}"
+        f"📅 Bugün\n\nMiladi: {today}\nHicri: {gun} {AYLAR[ay_index]}"
     )
 
-async def train(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# YIL
+# =========================
+async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
 
-    loss = train_model()
+    text = f"📅 {year} Hicri Aylar\n\n"
 
-    await update.message.reply_text(
-        f"🤖 Eğitim tamamlandı\nLoss: {round(loss,2)}\nParams: {PARAMS}"
-    )
+    for i, m in enumerate(MONTHS):
+        if m.year == year:
+            ay_index = (i - ANCHOR_INDEX + 11) % 12
+            text += f"{AYLAR[ay_index]}: {m}\n"
 
+    await update.message.reply_text(text)
+
+# =========================
+# RAMAZAN
+# =========================
+async def ramazan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+
+    for i, m in enumerate(MONTHS):
+        ay_index = (i - ANCHOR_INDEX + 11) % 12
+
+        if m.year == year and ay_index == 8:
+            await update.message.reply_text(
+                f"🌙 Ramazan\nBaşlangıç: {m}\nBitiş: {m + timedelta(days=29)}"
+            )
+            return
+
+# =========================
+# AREFE
+# =========================
+async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+
+    for i, m in enumerate(MONTHS):
+        ay_index = (i - ANCHOR_INDEX + 11) % 12
+
+        if m.year == year and ay_index == 11:
+            await update.message.reply_text(
+                f"🐑 Arefe: {m + timedelta(days=8)}\nBayram: {m + timedelta(days=9)}"
+            )
+            return
+
+# =========================
+# HİLAL 3 GÜN
+# =========================
+async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    base = datetime.now(timezone.utc).date()
+
+    text = "🌙 3 Gün Analiz\n\n"
+
+    for label, date in {
+        "Dün": base - timedelta(days=1),
+        "Bugün": base,
+        "Yarın": base + timedelta(days=1)
+    }.items():
+
+        found = False
+
+        for hour in range(16, 23):
+            alt, elong = hilal_kontrol_saat(date, 21.4, 39.8, hour)
+
+            if alt > 5 and elong > 10:
+                text += f"{label}: ✅ {hour}:00 UTC\n"
+                found = True
+                break
+
+        if not found:
+            text += f"{label}: ❌\n"
+
+    await update.message.reply_text(text)
+
+# =========================
+# HİLAL HARİTA
+# =========================
+async def hilal_harita(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now(timezone.utc).date()
+
+    grid = {
+        "Amerika": (-20, -60),
+        "Afrika": (10, 20),
+        "Avrupa": (50, 10),
+        "Ortadoğu": (25, 45),
+        "Asya": (35, 100),
+    }
+
+    text = "🗺️ Hilal Harita\n\n"
+
+    for name, (lat, lon) in grid.items():
+
+        ok = False
+
+        for hour in range(16, 23):
+            alt, elong = hilal_kontrol_saat(today, lat, lon, hour)
+
+            if alt > 5 and elong > 10:
+                ok = True
+                break
+
+        text += f"{name}: {'🟢' if ok else '🔴'}\n"
+
+    await update.message.reply_text(text)
+
+# =========================
+# BAYRAM
+# =========================
+async def bayram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+
+    hilal = False
+
+    for hour in range(16, 23):
+        alt, elong = hilal_kontrol_saat(tomorrow, 21.4, 39.8, hour)
+
+        if alt > 5 and elong > 10:
+            hilal = True
+            break
+
+    if hilal:
+        text = "🎉 Yarın büyük ihtimalle Bayram"
+    else:
+        text = "📅 Bayram henüz değil"
+
+    await update.message.reply_text(text)
+
+# =========================
+# AI KARAR
+# =========================
+async def karar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+
+    countries = {
+        "Suudi": (21.4, 39.8),
+        "Türkiye": (39.0, 35.0),
+        "İran": (35.7, 51.4),
+    }
+
+    total = 0
+    text = "🧠 Karar Motoru\n\n"
+
+    for name, (lat, lon) in countries.items():
+
+        best = 0
+
+        for hour in range(16, 23):
+            alt, elong = hilal_kontrol_saat(tomorrow, lat, lon, hour)
+
+            score = alt + elong
+
+            if score > best:
+                best = score
+
+        total += best
+        text += f"{name}: {best:.1f}\n"
+
+    confidence = min(int(total), 100)
+
+    result = "🎉 Bayram" if confidence > 60 else "📅 Devam"
+
+    text += f"\nSonuç: {result}\nGüven: %{confidence}"
+
+    await update.message.reply_text(text)
+
+# =========================
+# START
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-"""🚀 Hicri AI Motor
-
-/bugun
-/train"""
+        "🌙 Hicri Motor FULL\n\n"
+        "/bugun\n/yil 2030\n/ramazan 2030\n/arefe 2030\n"
+        "/hilal_3gun\n/hilal_harita\n/bayram\n/karar"
     )
 
 # =========================
@@ -275,7 +310,13 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("train", train))
+app.add_handler(CommandHandler("yil", yil))
+app.add_handler(CommandHandler("ramazan", ramazan))
+app.add_handler(CommandHandler("arefe", arefe))
+app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
+app.add_handler(CommandHandler("hilal_harita", hilal_harita))
+app.add_handler(CommandHandler("bayram", bayram))
+app.add_handler(CommandHandler("karar", karar))
 
-print("🚀 ML + HİLAL + CHAIN AKTİF")
+print("🚀 FULL SİSTEM AKTİF")
 app.run_polling()
