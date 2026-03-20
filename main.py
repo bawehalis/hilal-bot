@@ -51,7 +51,7 @@ def get_new_moons(start=1995, end=2035):
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL (TUNED)
+# 🔥 ADAPTIVE HİLAL MODEL
 # =========================
 def hilal_visible(date, nm):
 
@@ -71,12 +71,25 @@ def hilal_visible(date, nm):
 
             age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-            # 🔥 GÜNCELLENMİŞ (TUNED)
-            if (
-                (alt > 4.5 and elong > 8.5) or
-                (alt > 3.5 and elong > 10) or
-                (age > 18 and elong > 7)
-            ):
+            # 🔥 ADAPTIVE THRESHOLD
+            if elong < 8:
+                if alt > 6:
+                    return True
+
+            elif elong < 10:
+                if alt > 5:
+                    return True
+
+            elif elong < 12:
+                if alt > 4:
+                    return True
+
+            else:
+                if alt > 3:
+                    return True
+
+            # fallback
+            if age > 20 and elong > 7:
                 return True
 
     return False
@@ -90,11 +103,6 @@ def find_month_start(nm):
     d2 = nm.date() + timedelta(days=2)
 
     if hilal_visible(d1, nm):
-        return d1
-
-    age = (datetime.combine(d1, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
-
-    if age > 22:
         return d1
 
     return d2
@@ -148,7 +156,7 @@ def get_hijri(date):
     return gun, AYLAR[ay_index]
 
 # =========================
-# GERÇEK DATA
+# REAL DATA
 # =========================
 REAL_RAMADAN = {
     1995: datetime(1995,2,1).date(),
@@ -190,72 +198,8 @@ REAL_RAMADAN = {
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(timezone.utc).date()
     g,a = get_hijri(today)
-    await update.message.reply_text(f"📅 Bugün\n\nMiladi: {today}\nHicri: {g} {a}")
+    await update.message.reply_text(f"📅 Bugün\nMiladi: {today}\nHicri: {g} {a}")
 
-async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    year = int(context.args[0])
-    text = f"📅 {year}\n\n"
-
-    for i,m in enumerate(MONTHS):
-        if m.year == year:
-            idx = (i - ANCHOR_INDEX + 11) % 12
-            text += f"{AYLAR[idx]}: {m}\n"
-
-    await update.message.reply_text(text)
-
-async def ramazan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    year = int(context.args[0])
-
-    for i,m in enumerate(MONTHS):
-        idx = (i - ANCHOR_INDEX + 11) % 12
-        if m.year == year and idx == 8:
-            await update.message.reply_text(f"🌙 Ramazan\nBaşlangıç: {m}")
-            return
-
-async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    year = int(context.args[0])
-
-    for i,m in enumerate(MONTHS):
-        idx = (i - ANCHOR_INDEX + 11) % 12
-        if m.year == year and idx == 11:
-            await update.message.reply_text(f"🐑 Arefe: {m+timedelta(days=8)}\nBayram: {m+timedelta(days=9)}")
-            return
-
-async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    base = datetime.now(timezone.utc).date()
-    text = "🌙 3 Gün\n\n"
-
-    for label, d in {
-        "Dün": base - timedelta(days=1),
-        "Bugün": base,
-        "Yarın": base + timedelta(days=1)
-    }.items():
-        res = hilal_visible(d, NEW_MOONS[0])
-        text += f"{label}: {'✅' if res else '❌'}\n"
-
-    await update.message.reply_text(text)
-
-async def hilal_harita(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now(timezone.utc).date()
-    text = "🗺️ Hilal\n\n"
-
-    for loc in LOCATIONS:
-        res = hilal_visible(today, NEW_MOONS[0])
-        text += f"{round(loc.latitude.degrees,1)}: {'🟢' if res else '🔴'}\n"
-
-    await update.message.reply_text(text)
-
-async def bayram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
-    res = hilal_visible(tomorrow, NEW_MOONS[0])
-    await update.message.reply_text("🎉 Bayram" if res else "📅 Değil")
-
-async def karar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🧠 Sistem aktif")
-
-# =========================
-# ANALİZ
-# =========================
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "📊 ANALİZ\n\n"
@@ -287,14 +231,8 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
-# =========================
-# START
-# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/bugun\n/yil 2030\n/ramazan 2030\n/arefe 2030\n"
-        "/hilal_3gun\n/hilal_harita\n/bayram\n/karar\n/analiz"
-    )
+    await update.message.reply_text("/bugun\n/analiz")
 
 # =========================
 # APP
@@ -303,14 +241,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
-app.add_handler(CommandHandler("yil", yil))
-app.add_handler(CommandHandler("ramazan", ramazan))
-app.add_handler(CommandHandler("arefe", arefe))
-app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
-app.add_handler(CommandHandler("hilal_harita", hilal_harita))
-app.add_handler(CommandHandler("bayram", bayram))
-app.add_handler(CommandHandler("karar", karar))
 app.add_handler(CommandHandler("analiz", analiz))
 
-print("🚀 TUNED FINAL AKTİF")
+print("🚀 ADAPTIVE FINAL AKTİF")
 app.run_polling()
