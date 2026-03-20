@@ -28,9 +28,9 @@ sun = eph['sun']
 # LOCATIONS
 # =========================
 LOCATIONS = [
-    Topos(21.4, 39.8),
-    Topos(39.9, 32.8),
-    Topos(35.7, 51.4),
+    Topos(21.4, 39.8),   # Mekke
+    Topos(39.9, 32.8),   # Türkiye
+    Topos(35.7, 51.4),   # İran
 ]
 
 # =========================
@@ -51,7 +51,7 @@ def get_new_moons(start=1995, end=2035):
 NEW_MOONS = get_new_moons()
 
 # =========================
-# 🔥 ADAPTIVE HİLAL MODEL
+# 🔥 FINAL ADAPTIVE MODEL
 # =========================
 def hilal_visible(date, nm):
 
@@ -71,25 +71,25 @@ def hilal_visible(date, nm):
 
             age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-            # 🔥 ADAPTIVE THRESHOLD
+            # 🔥 DENGELİ MODEL (FIXED)
             if elong < 8:
-                if alt > 6:
+                if alt > 6.2:
                     return True
 
             elif elong < 10:
-                if alt > 5:
+                if alt > 5.7:
                     return True
 
             elif elong < 12:
-                if alt > 4:
+                if alt > 4.5:
                     return True
 
             else:
-                if alt > 3:
+                if alt > 3.2:
                     return True
 
             # fallback
-            if age > 20 and elong > 7:
+            if age > 22 and elong > 7:
                 return True
 
     return False
@@ -200,6 +200,33 @@ async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     g,a = get_hijri(today)
     await update.message.reply_text(f"📅 Bugün\nMiladi: {today}\nHicri: {g} {a}")
 
+async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+    text = f"📅 {year}\n\n"
+
+    for i,m in enumerate(MONTHS):
+        if m.year == year:
+            idx = (i - ANCHOR_INDEX + 11) % 12
+            text += f"{AYLAR[idx]}: {m}\n"
+
+    await update.message.reply_text(text)
+
+async def ramazan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+    for i,m in enumerate(MONTHS):
+        idx = (i - ANCHOR_INDEX + 11) % 12
+        if m.year == year and idx == 8:
+            await update.message.reply_text(f"🌙 Ramazan: {m}")
+            return
+
+async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+    for i,m in enumerate(MONTHS):
+        idx = (i - ANCHOR_INDEX + 11) % 12
+        if m.year == year and idx == 11:
+            await update.message.reply_text(f"Arefe: {m+timedelta(days=8)}\nBayram: {m+timedelta(days=9)}")
+            return
+
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "📊 ANALİZ\n\n"
@@ -231,8 +258,13 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text)
 
+# =========================
+# START
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("/bugun\n/analiz")
+    await update.message.reply_text(
+        "/bugun\n/yil 2030\n/ramazan 2030\n/arefe 2030\n/analiz"
+    )
 
 # =========================
 # APP
@@ -241,7 +273,10 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
+app.add_handler(CommandHandler("yil", yil))
+app.add_handler(CommandHandler("ramazan", ramazan))
+app.add_handler(CommandHandler("arefe", arefe))
 app.add_handler(CommandHandler("analiz", analiz))
 
-print("🚀 ADAPTIVE FINAL AKTİF")
+print("🚀 ULTIMATE FINAL AKTİF")
 app.run_polling()
