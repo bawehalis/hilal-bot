@@ -117,24 +117,25 @@ AYLAR_TR = [
 ]
 
 OZEL = {
-    (0,10): "Asure Gunu",
-    (1,12): "Mevlid Kandili",
-    (6,27): "Mirac Kandili",
-    (7,15): "Berat Kandili",
-    (8, 1): "Ramazan Baslangici",
-    (8,27): "Kadir Gecesi",
-    (9, 1): "Ramazan Bayrami 1. Gunu",
-    (9, 2): "Ramazan Bayrami 2. Gunu",
-    (9, 3): "Ramazan Bayrami 3. Gunu",
-    (11,9): "Arefe Gunu",
+    (0,10):  "Asure Gunu",
+    (1,12):  "Mevlid Kandili",
+    (6,27):  "Mirac Kandili",
+    (7,15):  "Berat Kandili",
+    (8, 1):  "Ramazan Baslangici",
+    (8,27):  "Kadir Gecesi",
+    (9, 1):  "Ramazan Bayrami 1. Gunu",
+    (9, 2):  "Ramazan Bayrami 2. Gunu",
+    (9, 3):  "Ramazan Bayrami 3. Gunu",
+    (11, 9): "Arefe Gunu",
     (11,10): "Kurban Bayrami 1. Gunu",
     (11,11): "Kurban Bayrami 2. Gunu",
     (11,12): "Kurban Bayrami 3. Gunu",
     (11,13): "Kurban Bayrami 4. Gunu",
 }
 
-ANCHOR_TARGET = datetime(2025, 3, 1).date()
-ANCHOR_INDEX  = min(range(len(MONTHS)), key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days))
+ANCHOR_TARGET   = datetime(2025, 3, 1).date()
+ANCHOR_INDEX    = min(range(len(MONTHS)), key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days))
+MUHARREM_1446   = ANCHOR_INDEX - 8
 
 def get_hijri(check_date):
     current = None
@@ -145,23 +146,30 @@ def get_hijri(check_date):
         return 0, "?", -1, 0
     start, idx = current
     gun       = (check_date - start).days + 1
-    ay_index  = (idx - ANCHOR_INDEX) % 12
-    hicri_yil = 1446 + (idx - ANCHOR_INDEX) // 12
+    delta     = idx - MUHARREM_1446
+    ay_index  = delta % 12
+    hicri_yil = 1446 + delta // 12
     return gun, AYLAR_TR[ay_index], ay_index, hicri_yil
 
 def date_from_hijri(hicri_yil, ay_index, gun):
-    offset     = (hicri_yil - 1446) * 12 + (ay_index - 8)
-    target_idx = ANCHOR_INDEX + offset
+    delta      = (hicri_yil - 1446) * 12 + ay_index
+    target_idx = MUHARREM_1446 + delta
     if target_idx < 0 or target_idx >= len(MONTHS):
         return None
     return MONTHS[target_idx] + timedelta(days=gun - 1)
 
 def find_month_date(year_miladi, ay_index):
     for i, m in enumerate(MONTHS):
-        if (i - ANCHOR_INDEX) % 12 == ay_index and m.year == year_miladi:
+        delta = i - MUHARREM_1446
+        if delta < 0:
+            continue
+        if delta % 12 == ay_index and m.year == year_miladi:
             return m, i
     for i, m in enumerate(MONTHS):
-        if (i - ANCHOR_INDEX) % 12 == ay_index and abs(m.year - year_miladi) == 1:
+        delta = i - MUHARREM_1446
+        if delta < 0:
+            continue
+        if delta % 12 == ay_index and abs(m.year - year_miladi) == 1:
             return m, i
     return None, None
 
@@ -241,8 +249,11 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     found = False
     for i, m in enumerate(MONTHS):
         if m.year == year:
-            idx  = (i - ANCHOR_INDEX) % 12
-            hyil = 1446 + (i - ANCHOR_INDEX) // 12
+            delta = i - MUHARREM_1446
+            if delta < 0:
+                continue
+            idx  = delta % 12
+            hyil = 1446 + delta // 12
             lines.append(AYLAR_TR[idx] + " " + str(hyil) + ": " + str(m))
             found = True
     if not found:
