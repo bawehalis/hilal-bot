@@ -1,6 +1,6 @@
 import os
-import datetime
-import numpy as np
+import logging
+from datetime import datetime, timedelta, timezone
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -8,22 +8,8 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
-# =========================
-# CONFIG
-# =========================
 TOKEN = os.getenv("TOKEN")
-if not TOKEN:
-    raise ValueError("TOKEN yok")
-
-ANCHOR_AREFE = datetime.date(1995, 5, 9)
-
-LEAP_YEARS = [2,5,7,10,13,16,18,21,24,26,29]
-
-LOCATIONS = [
-    Topos(21.3891, 39.8579),  # Mekke
-    Topos(39.9334, 32.8597),  # Ankara
-    Topos(35.6892, 51.3890),  # Tahran
-]
+logging.basicConfig(level=logging.INFO)
 
 # =========================
 # SKYFIELD
@@ -36,188 +22,186 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# GERÇEK DATA (kalibrasyon)
+# 1️⃣ ANCHOR (1995 AREFE)
 # =========================
-REAL_EVENTS = {
-    2023: {"ramadan": datetime.date(2023,3,23), "eid_fitr": datetime.date(2023,4,21), "eid_adha": datetime.date(2023,6,28)},
-    2024: {"ramadan": datetime.date(2024,3,11), "eid_fitr": datetime.date(2024,4,10), "eid_adha": datetime.date(2024,6,16)},
-    2025: {"ramadan": datetime.date(2025,3,1),  "eid_fitr": datetime.date(2025,3,30), "eid_adha": datetime.date(2025,6,6)},
-}
+ANCHOR_DATE = datetime(1995, 6, 8).date()  # 9 Zilhicce 1415 (Arefe)
 
-# =========================
-# HİCRİ YIL
-# =========================
-def is_leap(year):
-    return ((year - 1995) % 30) in LEAP_YEARS
-
-def estimate_arefe(year):
-    date = ANCHOR_AREFE
-
-    if year >= 1995:
-        for y in range(1995, year):
-            date += datetime.timedelta(days=355 if is_leap(y) else 354)
-    else:
-        for y in range(year, 1995):
-            date -= datetime.timedelta(days=355 if is_leap(y) else 354)
-
-    return date
+# 30 yıl döngüsü (artık yıllar)
+LEAP_YEARS = {2,5,7,10,13,16,18,21,24,26,29}
 
 # =========================
-# ASTRONOMİ
+# 2️⃣ NEW MOONS
 # =========================
-def moon_age_hours(date):
-    try:
-        t0 = ts.utc(date.year, date.month, date.day)
-        t1 = ts.utc(date.year, date.month, date.day + 2)
+def get_new_moons():
+    t0 = ts.utc(1990,1,1)
+    t1 = ts.utc(2040,12,31)
 
-        times, phases = find_discrete(t0, t1, moon_phases(eph))
+    times, phases = find_discrete(t0, t1, moon_phases(eph))
 
-        for t, p in zip(times, phases):
-            if p == 0:
-                nm = t.utc_datetime()
-                delta = datetime.datetime.combine(date, datetime.time()) - nm
-                return abs(delta.total_seconds()) / 3600
-    except:
-        pass
-    return 24
+    return [
+        t.utc_datetime().replace(tzinfo=timezone.utc)
+        for t,p in zip(times, phases)
+        if p == 0
+    ]
 
-def get_alt_elong(date, location):
-    try:
-        t = ts.utc(date.year, date.month, date.day, 18)
-
-        obs = earth + location
-        ast = obs.at(t).observe(moon)
-        alt, az, _ = ast.apparent().altaz()
-
-        sun_ast = obs.at(t).observe(sun)
-        elong = ast.separation_from(sun_ast).degrees
-
-        return alt.degrees, elong
-    except:
-        return 0, 0
+NEW_MOONS = get_new_moons()
 
 # =========================
-# YALLOP MODEL
+# 3️⃣ YALLOP MODEL
 # =========================
-def yallop_q(elong, alt):
-    W = max(alt / 10, 0)
+def yallop_q(date, lat, lon):
+
+    t = ts.utc(date.year, date.month, date.day, 18)
+    loc = earth + Topos(lat, lon)
+
+    e = loc.at(t)
+    m = e.observe(moon).apparent()
+    s = e.observe(sun).apparent()
+
+    alt, _, _ = m.altaz()
+    elong = m.separation_from(s).degrees
+
+    W = alt.degrees / 10
+
     q = (elong - 11.8371 + 6.3226*W - 0.7319*(W**2) + 0.1018*(W**3)) / 10
+
     return q
 
-def refine(date):
-    for i in range(2):
-        d = date + datetime.timedelta(days=i)
+def hilal_visible(date):
 
-        qs = []
-        for loc in LOCATIONS:
-            alt, elong = get_alt_elong(d, loc)
-            qs.append(yallop_q(elong, alt))
+    points = [
+        (21.4,39.8),   # Mekke
+        (39.9,32.8),   # Ankara
+        (35.7,51.4),   # Tahran
+    ]
 
-        avg_q = sum(qs) / len(qs)
+    qs = [yallop_q(date, lat, lon) for lat,lon in points]
 
-        if avg_q > 0:
-            return d
+    avg_q = sum(qs)/len(qs)
+
+    return avg_q > 0
+
+# =========================
+# 4️⃣ AREFE HESAP (DÖNGÜ)
+# =========================
+def get_arefe(year):
+
+    diff_years = year - 1995
+
+    date = ANCHOR_DATE
+
+    for i in range(diff_years):
+        cycle_year = (i % 30) + 1
+
+        if cycle_year in LEAP_YEARS:
+            date += timedelta(days=355)
+        else:
+            date += timedelta(days=354)
 
     return date
 
 # =========================
-# KALİBRASYON
+# 5️⃣ AY BAŞLANGICI (YALLOP)
 # =========================
-def calibrate(year, predicted_arefe):
-    if year in REAL_EVENTS:
-        real_arefe = REAL_EVENTS[year]["eid_adha"] - datetime.timedelta(days=1)
-        diff = (predicted_arefe - real_arefe).days
+def find_month_start(approx_date):
 
-        if diff == 1:
-            return -1
-        elif diff == -1:
-            return 1
+    nm = min(NEW_MOONS, key=lambda x: abs((x.date() - approx_date)))
 
-    return 0
+    for i in range(1,4):
+        d = (nm + timedelta(days=i)).date()
+
+        if hilal_visible(d):
+            return d
+
+    return (nm + timedelta(days=2)).date()
 
 # =========================
-# HİCRİ OLAYLAR
+# 6️⃣ YIL ANALİZ
 # =========================
-def get_events(year):
+def analyze_year(year):
 
-    arefe = estimate_arefe(year)
+    arefe = get_arefe(year)
 
-    dh_start = arefe - datetime.timedelta(days=8)
+    # 🔥 Zilhicce başlangıcı
+    zilhicce = arefe - timedelta(days=8)
 
-    # Ramazan hesap
-    ramadan = dh_start - datetime.timedelta(days=266)
-    ramadan = refine(ramadan)
+    # 🔥 Kurban
+    kurban = arefe + timedelta(days=1)
 
-    # Kalibrasyon
-    correction = calibrate(year, arefe)
-    ramadan += datetime.timedelta(days=correction)
+    # 🔥 Ramazan approx
+    ramazan_guess = zilhicce - timedelta(days=266)
 
-    fitr = ramadan + datetime.timedelta(days=29)
-    adha = dh_start + datetime.timedelta(days=9)
+    # 🔥 Hilal düzeltme
+    ramazan = find_month_start(ramazan_guess)
+
+    bayram = ramazan + timedelta(days=29)
 
     return {
-        "ramadan": ramadan,
-        "eid_fitr": fitr,
+        "ramazan": ramazan,
+        "bayram": bayram,
         "arefe": arefe,
-        "eid_adha": adha
+        "kurban": kurban
     }
 
 # =========================
-# ANALİZ
+# 7️⃣ KALİBRASYON (küçük düzeltme)
 # =========================
-def analyze():
-    text = ""
-    correct = 0
-    total = 0
+REAL = {
+    2023:"2023-06-28",
+    2024:"2024-06-16",
+    2025:"2025-06-05",
+}
 
-    for y in REAL_EVENTS:
-        pred = get_events(y)
-        real = REAL_EVENTS[y]
+def calibrate(year, calc_arefe):
 
-        d1 = (pred["ramadan"] - real["ramadan"]).days
-        d2 = (pred["eid_fitr"] - real["eid_fitr"]).days
-        d3 = (pred["eid_adha"] - real["eid_adha"]).days
+    if year in REAL:
+        real = datetime.fromisoformat(REAL[year]).date()
+        diff = (real - calc_arefe).days
 
-        text += f"\n{y}\nRamazan:{d1} Fitr:{d2} Adha:{d3}\n"
+        if abs(diff) <= 2:
+            return calc_arefe + timedelta(days=diff)
 
-        if abs(d1)<=1 and abs(d2)<=1 and abs(d3)<=1:
-            correct += 1
-
-        total += 1
-
-    acc = (correct/total)*100 if total else 0
-    text += f"\nDOĞRULUK: %{round(acc,2)}"
-
-    return text
+    return calc_arefe
 
 # =========================
-# TELEGRAM
+# BOT
+# =========================
+async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    y = int(context.args[0])
+
+    data = analyze_year(y)
+
+    # kalibrasyon
+    data["arefe"] = calibrate(y, data["arefe"])
+    data["kurban"] = data["arefe"] + timedelta(days=1)
+
+    text = f"""📅 {y} ANALİZ
+
+🌙 Ramazan: {data['ramazan']}
+🎉 Bayram: {data['bayram']}
+
+🐑 Arefe: {data['arefe']}
+🐑 Kurban: {data['kurban']}"""
+
+    await update.message.reply_text(text)
+
+# =========================
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🌙 Ultra Sistem\n/events 2025\n/analyze")
 
-async def events(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    y = int(context.args[0])
-    e = get_events(y)
-
-    msg = f"{y}\nRamazan:{e['ramadan']}\nFitr:{e['eid_fitr']}\nArefe:{e['arefe']}\nAdha:{e['eid_adha']}"
-    await update.message.reply_text(msg)
-
-async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(analyze())
+    await update.message.reply_text(
+        "🚀 Hicri Engine\n\n/yil 2025"
+    )
 
 # =========================
-# MAIN
+# APP
 # =========================
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("events", events))
-    app.add_handler(CommandHandler("analyze", analyze_cmd))
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("yil", yil))
 
-    print("Çalışıyor...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+print("🚀 ULTIMATE HİCRİ ENGINE AKTİF")
+app.run_polling()
