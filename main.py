@@ -36,12 +36,11 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# GELİŞMİŞ HİLAL MODELİ
+# 🔥 DOĞRU HİLAL MODELİ (FINAL)
 # =========================
 def visible(date, nm):
 
     t = ts.utc(date.year, date.month, date.day, 18)
-
     loc = earth + Topos(21.4,39.8)
 
     e = loc.at(t)
@@ -53,15 +52,19 @@ def visible(date, nm):
 
     age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-    # 🔥 AKILLI SKOR
-    score = alt.degrees*0.5 + elong*0.3 + age*0.2
+    alt = alt.degrees
 
-    # 🔥 ERKEN BAŞLATMA + KONTROL
-    if alt.degrees < 4 or elong < 4 or age < 6:
-        return False
+    # 🔥 GERÇEK GÖZLEM MANTIĞI
+    if alt >= 3 and elong >= 5:
+        return True
 
-    return score > 8
+    if alt >= 5 and elong >= 4:
+        return True
 
+    if age >= 10 and elong >= 4:
+        return True
+
+    return False
 
 # =========================
 # AY BAŞLANGIÇ
@@ -94,7 +97,7 @@ AYLAR = [
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-# 🔥 DOĞRU ANCHOR
+# 🔥 STABLE ANCHOR
 ANCHOR_DATE = datetime(2025,3,1).date()
 
 ANCHOR_INDEX = min(range(len(MONTHS)),
@@ -224,7 +227,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 # =========================
-# 3 GÜN
+# 3 GÜN ANALİZ
 # =========================
 async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
@@ -234,7 +237,7 @@ async def hilal_3gun(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nm = max([x for x in NEW_MOONS if x.date() <= d])
         return "✅" if visible(d,nm) else "❌"
 
-    text = f"""🌙 3 Gün
+    text = f"""🌙 3 Gün Analiz
 
 Dün: {c(t-timedelta(days=1))}
 Bugün: {c(t)}
@@ -266,5 +269,5 @@ app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
 
-print("🚀 OPTIMIZED FINAL AKTİF")
+print("🚀 FINAL HİLAL MOTOR AKTİF")
 app.run_polling()
