@@ -8,9 +8,15 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
 
+# =========================
+# TOKEN
+# =========================
 TOKEN = os.getenv("TOKEN")
 logging.basicConfig(level=logging.INFO)
 
+# =========================
+# SKYFIELD
+# =========================
 ts = load.timescale()
 eph = load('de421.bsp')
 
@@ -18,14 +24,17 @@ earth = eph['earth']
 moon = eph['moon']
 sun = eph['sun']
 
+# =========================
+# LOCATIONS
+# =========================
 LOCATIONS = [
-    Topos(21.4, 39.8),
-    Topos(39.9, 32.8),
-    Topos(35.7, 51.4),
+    Topos(21.4, 39.8),   # Mekke
+    Topos(39.9, 32.8),   # Türkiye
+    Topos(35.7, 51.4),   # İran
 ]
 
 # =========================
-# NEW MOON
+# NEW MOONS
 # =========================
 def get_new_moons(start=1995, end=2035):
     t0 = ts.utc(start,1,1)
@@ -42,7 +51,7 @@ def get_new_moons(start=1995, end=2035):
 NEW_MOONS = get_new_moons()
 
 # =========================
-# SCORE
+# SCORE MODEL
 # =========================
 def hilal_score(date, nm):
 
@@ -77,7 +86,7 @@ def hilal_score(date, nm):
     return total / count
 
 # =========================
-# AY BAŞI (KARAR)
+# AY BAŞI KARAR
 # =========================
 def find_month_start(nm):
 
@@ -87,11 +96,12 @@ def find_month_start(nm):
     s1 = hilal_score(d1, nm)
     s2 = hilal_score(d2, nm)
 
-    # 🔥 kritik fark
+    # güçlü görünürlük
     if s1 > 15:
         return d1
 
-    if s2 - s1 > 1.5:
+    # 🔥 DENGE AYARI
+    if s2 - s1 > 2.2:
         return d2
 
     return d1
@@ -104,12 +114,18 @@ def build_months():
 
 MONTHS = build_months()
 
+# =========================
+# AYLAR
+# =========================
 AYLAR = [
     "Muharrem","Safer","Rebiülevvel","Rebiülahir",
     "Cemaziyelevvel","Cemaziyelahir","Recep",
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
+# =========================
+# ANCHOR
+# =========================
 ANCHOR_TARGET = datetime(2025,5,28).date()
 
 ANCHOR_INDEX = min(
@@ -118,7 +134,7 @@ ANCHOR_INDEX = min(
 )
 
 # =========================
-# HİCRİ
+# HİCRİ HESAP
 # =========================
 def get_hijri(date):
 
@@ -139,7 +155,7 @@ def get_hijri(date):
     return gun, AYLAR[ay_index]
 
 # =========================
-# REAL DATA
+# GERÇEK VERİ
 # =========================
 REAL_RAMADAN = {
     1995: datetime(1995,2,1).date(),
@@ -176,12 +192,45 @@ REAL_RAMADAN = {
 }
 
 # =========================
-# ANALİZ
+# KOMUTLAR
 # =========================
+async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now(timezone.utc).date()
+    g,a = get_hijri(today)
+    await update.message.reply_text(f"📅 Bugün\nMiladi: {today}\nHicri: {g} {a}")
+
+async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+    text = f"📅 {year}\n\n"
+
+    for i,m in enumerate(MONTHS):
+        if m.year == year:
+            idx = (i - ANCHOR_INDEX + 11) % 12
+            text += f"{AYLAR[idx]}: {m}\n"
+
+    await update.message.reply_text(text)
+
+async def ramazan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+    for i,m in enumerate(MONTHS):
+        idx = (i - ANCHOR_INDEX + 11) % 12
+        if m.year == year and idx == 8:
+            await update.message.reply_text(f"🌙 Ramazan: {m}")
+            return
+
+async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    year = int(context.args[0])
+    for i,m in enumerate(MONTHS):
+        idx = (i - ANCHOR_INDEX + 11) % 12
+        if m.year == year and idx == 11:
+            await update.message.reply_text(
+                f"Arefe: {m+timedelta(days=8)}\nBayram: {m+timedelta(days=9)}"
+            )
+            return
+
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "📊 ANALİZ\n\n"
-
     correct = 0
     total = 0
 
@@ -211,21 +260,12 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 # =========================
-# BUGÜN
-# =========================
-async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now(timezone.utc).date()
-    g,a = get_hijri(today)
-
-    await update.message.reply_text(
-        f"📅 Bugün\nMiladi: {today}\nHicri: {g} {a}"
-    )
-
-# =========================
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("/bugun\n/analiz")
+    await update.message.reply_text(
+        "/bugun\n/yil 2030\n/ramazan 2030\n/arefe 2030\n/analiz"
+    )
 
 # =========================
 # APP
@@ -234,6 +274,9 @@ app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("bugun", bugun))
+app.add_handler(CommandHandler("yil", yil))
+app.add_handler(CommandHandler("ramazan", ramazan))
+app.add_handler(CommandHandler("arefe", arefe))
 app.add_handler(CommandHandler("analiz", analiz))
 
 print("🚀 FINAL STABLE MODEL AKTİF")
