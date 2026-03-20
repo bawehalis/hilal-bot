@@ -28,9 +28,9 @@ sun = eph['sun']
 # LOCATIONS
 # =========================
 LOCATIONS = [
-    Topos(21.4, 39.8),   # Mekke
-    Topos(39.9, 32.8),   # Türkiye
-    Topos(35.7, 51.4),   # İran
+    Topos(21.4, 39.8),
+    Topos(39.9, 32.8),
+    Topos(35.7, 51.4),
 ]
 
 # =========================
@@ -51,7 +51,7 @@ def get_new_moons(start=1995, end=2035):
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL (BALANCED)
+# HİLAL (TUNED)
 # =========================
 def hilal_visible(date, nm):
 
@@ -71,11 +71,11 @@ def hilal_visible(date, nm):
 
             age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-            # 🔥 GÜNCELLENMİŞ MODEL
+            # 🔥 GÜNCELLENMİŞ (TUNED)
             if (
-                (alt > 4 and elong > 8) or
-                (alt > 3 and elong > 10) or
-                (age > 16 and elong > 7)
+                (alt > 4.5 and elong > 8.5) or
+                (alt > 3.5 and elong > 10) or
+                (age > 18 and elong > 7)
             ):
                 return True
 
@@ -94,7 +94,7 @@ def find_month_start(nm):
 
     age = (datetime.combine(d1, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-    if age > 20:
+    if age > 22:
         return d1
 
     return d2
@@ -148,7 +148,7 @@ def get_hijri(date):
     return gun, AYLAR[ay_index]
 
 # =========================
-# GERÇEK DATA (1995–2025)
+# GERÇEK DATA
 # =========================
 REAL_RAMADAN = {
     1995: datetime(1995,2,1).date(),
@@ -312,5 +312,5 @@ app.add_handler(CommandHandler("bayram", bayram))
 app.add_handler(CommandHandler("karar", karar))
 app.add_handler(CommandHandler("analiz", analiz))
 
-print("🚀 BALANCED FINAL AKTİF")
+print("🚀 TUNED FINAL AKTİF")
 app.run_polling()
