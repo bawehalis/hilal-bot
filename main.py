@@ -36,7 +36,7 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# HİLAL MODEL (STABLE)
+# GELİŞMİŞ HİLAL MODELİ
 # =========================
 def visible(date, nm):
 
@@ -53,11 +53,15 @@ def visible(date, nm):
 
     age = (datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc) - nm).total_seconds()/3600
 
-    # 🔥 STABLE PARAM
-    if alt.degrees < 5 or elong < 5 or age < 8:
+    # 🔥 AKILLI SKOR
+    score = alt.degrees*0.5 + elong*0.3 + age*0.2
+
+    # 🔥 ERKEN BAŞLATMA + KONTROL
+    if alt.degrees < 4 or elong < 4 or age < 6:
         return False
 
-    return True
+    return score > 8
+
 
 # =========================
 # AY BAŞLANGIÇ
@@ -90,7 +94,7 @@ AYLAR = [
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-# 🔥 DOĞRU ANCHOR (SENİN ÇALIŞAN)
+# 🔥 DOĞRU ANCHOR
 ANCHOR_DATE = datetime(2025,3,1).date()
 
 ANCHOR_INDEX = min(range(len(MONTHS)),
@@ -243,7 +247,7 @@ Yarın: {c(t+timedelta(days=1))}"""
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-"""🚀 STABLE HİCRİ MOTOR
+"""🚀 Hicri Motor FINAL
 
 /bugun
 /yil 2025
@@ -262,5 +266,5 @@ app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
 
-print("🚀 STABLE FINAL AKTİF")
+print("🚀 OPTIMIZED FINAL AKTİF")
 app.run_polling()
