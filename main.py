@@ -29,15 +29,24 @@ earth = eph["earth"]
 moon  = eph["moon"]
 sun   = eph["sun"]
 
-LOCATIONS = {
-    "Ankara":   (wgs84.latlon(39.9334, 32.8597), 3.0),
-    "Istanbul": (wgs84.latlon(41.0082, 28.9784), 2.5),
-    "Mekke":    (wgs84.latlon(21.4225, 39.8262), 2.0),
-    "Kahire":   (wgs84.latlon(30.0444, 31.2357), 1.5),
-    "Tahran":   (wgs84.latlon(35.6892, 51.3890), 1.0),
+# ══════════════════════════════════════════════
+# KONUMLAR — gozlem noktalari
+# ══════════════════════════════════════════════
+GOZLEM_NOKTALARI = {
+    "Mekke":    wgs84.latlon(21.4225, 39.8262),
+    "Medine":   wgs84.latlon(24.4672, 39.6151),
+    "Ankara":   wgs84.latlon(39.9334, 32.8597),
+    "Istanbul": wgs84.latlon(41.0082, 28.9784),
+    "Tahran":   wgs84.latlon(35.6892, 51.3890),
+    "Kahire":   wgs84.latlon(30.0444, 31.2357),
+    "Bağdat":   wgs84.latlon(33.3406, 44.4009),
+    "Karaçi":   wgs84.latlon(24.8607, 67.0011),
 }
 
-def get_new_moons(start=1993, end=2037):
+# ══════════════════════════════════════════════
+# YENİ AYLAR
+# ══════════════════════════════════════════════
+def get_new_moons(start=1993, end=2040):
     t0 = ts.utc(start, 1, 1)
     t1 = ts.utc(end, 12, 31)
     times, phases = find_discrete(t0, t1, moon_phases(eph))
@@ -49,7 +58,10 @@ def get_new_moons(start=1993, end=2037):
 
 NEW_MOONS = get_new_moons()
 
-def get_sunset(loc, year, month, day):
+# ══════════════════════════════════════════════
+# GÜNEŞ BATIŞI
+# ══════════════════════════════════════════════
+def get_sunset_utc(loc, year, month, day):
     try:
         t0 = ts.utc(year, month, day, 12)
         t1 = ts.utc(year, month, day, 23, 59)
@@ -62,104 +74,155 @@ def get_sunset(loc, year, month, day):
     except Exception:
         return 18.0
 
-def yallop_q(alt, elong):
-    W    = elong
-    ARCV = alt
-    q = (ARCV - (11.8371 - 6.3226*(W*0.01) + 7.0482*(W*0.01)**2 - 0.3014*(W*0.01)**3))
+# ══════════════════════════════════════════════
+# ODEH KRİTERİ — en güncel gözlemsel standart
+# ══════════════════════════════════════════════
+def odeh_criterion(alt_deg, elong_deg):
+    """
+    ODEH 2004 kriteri:
+    q = ARCV - (7.1651 - 6.3226*W + 7.0482*W^2 - 0.3014*W^3)
+    W = topocentric elongation (derece)
+    ARCV = arc of vision (ay irtifasi - gunes irtifasi, yaklasik ay irtifasi)
+
+    q >= 0    : acik gozle gorunur
+    q >= -0.96: optik yardimla gorunur
+    q < -0.96 : gorunmez
+    """
+    W    = elong_deg
+    ARCV = alt_deg
+    f_W  = 7.1651 - 6.3226*(W*0.01) + 7.0482*(W*0.01)**2 - 0.3014*(W*0.01)**3
+    q    = ARCV - f_W
     return q
 
-def get_best_params(check_date, nm):
-    best_q   = -99.0
-    best_alt = -99.0
-    best_elong = 0.0
-    best_vis_weight = 0.0
+def yallop_criterion(alt_deg, elong_deg):
+    """
+    Yallop 1997 q degeri
+    q >= +0.216 : kolay gorunur (A)
+    q >= -0.014 : gorunur (B)
+    q >= -0.160 : zor gorunur (C)
+    q >= -0.232 : optik arac gerekli (D)
+    q >= -0.293 : optik aracla zor (E)
+    q <  -0.293 : gorunmez (F)
+    """
+    W    = elong_deg
+    ARCV = alt_deg
+    q    = ARCV - (11.8371 - 6.3226*(W*0.01) + 7.0482*(W*0.01)**2 - 0.3014*(W*0.01)**3)
+    return q
 
-    for loc_name, (loc, weight) in LOCATIONS.items():
-        sunset_hour = get_sunset(loc, check_date.year, check_date.month, check_date.day)
-        # Sunset +20dk ile +90dk arasi en iyi ani bul
-        for minute_offset in range(20, 95, 5):
-            hour_frac = sunset_hour + minute_offset / 60.0
-            hour      = int(hour_frac)
-            minute    = int((hour_frac - hour) * 60)
-            if hour >= 24:
-                break
-            t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
-            obs   = (earth + loc).at(t)
-            m_app = obs.observe(moon).apparent()
-            s_app = obs.observe(sun).apparent()
-            alt_m, _, _ = m_app.altaz()
-            elong        = m_app.separation_from(s_app).degrees
-            alt_deg      = alt_m.degrees
+# ══════════════════════════════════════════════
+# BİR KONUMDA HİLAL DEĞERLENDİRMESİ
+# ══════════════════════════════════════════════
+def evaluate_hilal_at_location(loc, check_date, nm):
+    """
+    Belirli bir konumda sunset sonrasi en iyi hilal parametrelerini dondur.
+    Sunset +15dk ile +65dk arasinda en yuksek q degerini ara.
+    """
+    sunset_h = get_sunset_utc(loc, check_date.year, check_date.month, check_date.day)
+    best_q_yallop = -99.0
+    best_q_odeh   = -99.0
+    best_alt      = -99.0
+    best_elong    = 0.0
 
-            if alt_deg <= 0:
-                continue
+    for offset_min in range(15, 70, 5):
+        hf     = sunset_h + offset_min / 60.0
+        hour   = int(hf)
+        minute = int((hf - hour) * 60)
+        if hour >= 24:
+            break
 
-            q = yallop_q(alt_deg, elong)
-            if q > best_q:
-                best_q     = q
-                best_alt   = alt_deg
-                best_elong = elong
-                best_vis_weight = weight
+        t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
+        obs   = (earth + loc).at(t)
+        m_app = obs.observe(moon).apparent()
+        s_app = obs.observe(sun).apparent()
 
-    return best_alt, best_elong, best_q, best_vis_weight
+        alt_m, _, _  = m_app.altaz()
+        alt_s, _, _  = s_app.altaz()
+        elong         = m_app.separation_from(s_app).degrees
+        alt_deg       = alt_m.degrees
 
-def hilal_score_weighted(check_date, nm):
-    total_score  = 0.0
-    total_weight = 0.0
+        if alt_deg <= 0:
+            continue
 
-    for loc_name, (loc, weight) in LOCATIONS.items():
-        sunset_hour = get_sunset(loc, check_date.year, check_date.month, check_date.day)
-        for minute_offset in range(20, 120, 10):
-            hour_frac = sunset_hour + minute_offset / 60.0
-            hour      = int(hour_frac)
-            minute    = int((hour_frac - hour) * 60)
-            if hour >= 24:
-                break
-            t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
-            obs   = (earth + loc).at(t)
-            m_app = obs.observe(moon).apparent()
-            s_app = obs.observe(sun).apparent()
-            alt_m, _, _ = m_app.altaz()
-            elong        = m_app.separation_from(s_app).degrees
-            alt_deg      = alt_m.degrees
-            if alt_deg <= 0:
-                continue
-            age_hours = (
-                datetime.combine(check_date, datetime.min.time(), tzinfo=timezone.utc) - nm
-            ).total_seconds() / 3600.0
-            illum = ((1 - math.cos(math.radians(elong))) / 2) * 100
-            q     = yallop_q(alt_deg, elong)
-            score = alt_deg*1.5 + elong*0.8 + age_hours*0.05 + illum*0.3 + max(q,0)*2.0
-            total_score  += score * weight
-            total_weight += weight
+        q_y = yallop_criterion(alt_deg, elong)
+        q_o = odeh_criterion(alt_deg, elong)
 
-    return total_score / total_weight if total_weight > 0 else 0.0
+        if q_y > best_q_yallop:
+            best_q_yallop = q_y
+            best_q_odeh   = q_o
+            best_alt      = alt_deg
+            best_elong    = elong
 
+    return {
+        "alt":    best_alt,
+        "elong":  best_elong,
+        "q_yallop": best_q_yallop,
+        "q_odeh":   best_q_odeh,
+    }
+
+# ══════════════════════════════════════════════
+# GLOBAL HİLAL KARARI
+# ODEH q >= 0 → acik gozle gorunur
+# En az 1 konumda gorunurse ay baslar
+# ══════════════════════════════════════════════
+def hilal_gorunur_global(check_date, nm):
+    """
+    Tum gozlem noktalarinda hilali degerlendir.
+    En az 1 konumda ODEH q >= 0 ise True (gorunur).
+    Doner: (gorunur_mu, en_iyi_q, en_iyi_konum, detaylar)
+    """
+    best_q     = -99.0
+    best_loc   = ""
+    gorunur    = False
+    detaylar   = {}
+
+    for loc_name, loc in GOZLEM_NOKTALARI.items():
+        params = evaluate_hilal_at_location(loc, check_date, nm)
+        detaylar[loc_name] = params
+
+        if params["q_odeh"] > best_q:
+            best_q   = params["q_odeh"]
+            best_loc = loc_name
+
+        # ODEH kriteri: q >= 0 acik gozle gorunur
+        if params["q_odeh"] >= 0.0:
+            gorunur = True
+
+    return gorunur, best_q, best_loc, detaylar
+
+# ══════════════════════════════════════════════
+# AY BAŞI KARARI — saf fizik
+# Kural:
+#   D1 aksamı hilal gorünürse → D1 ay basi
+#   D1 gorünmezse → ay 30 gune tamamlanir → D2 ay basi
+# ══════════════════════════════════════════════
 def find_month_start(nm):
     d1 = nm.date() + timedelta(days=1)
-    d2 = nm.date() + timedelta(days=2)
+    gorunur_d1, q_d1, loc_d1, _ = hilal_gorunur_global(d1, nm)
 
-    alt1, elong1, q1, w1 = get_best_params(d1, nm)
-    alt2, elong2, q2, w2 = get_best_params(d2, nm)
-    s1 = hilal_score_weighted(d1, nm)
-    s2 = hilal_score_weighted(d2, nm)
-
-    # D1 hic gorunmez (ay ufkun altinda veya cok kotu q)
-    d1_invisible = (alt1 <= 0 or q1 < -0.293)
-    d2_visible   = (alt2 > 0 and q2 >= -0.293)
-
-    # D1 tamamen gorunmez, D2 gorunur -> D2
-    if d1_invisible and d2_visible:
-        return d2
-
-    # D1 gorunur -> D1 (agresif D1 tercihi)
-    if not d1_invisible:
+    if gorunur_d1:
         return d1
+    else:
+        # Hilal gorünmedi, ay 30 güne tamamlandi
+        return d1 + timedelta(days=1)  # = d2
 
-    return d1
-
+# ══════════════════════════════════════════════
+# TAKVİM İNŞASI
+# ══════════════════════════════════════════════
+logger.info("Takvim insa ediliyor...")
 MONTHS = sorted([find_month_start(nm) for nm in NEW_MOONS])
+logger.info("%d ay basi hesaplandi.", len(MONTHS))
 
+# ══════════════════════════════════════════════
+# AY UZUNLUKLARI KONTROLÜ (29 veya 30 olmali)
+# ══════════════════════════════════════════════
+for i in range(len(MONTHS) - 1):
+    gun_sayisi = (MONTHS[i+1] - MONTHS[i]).days
+    if gun_sayisi not in (29, 30):
+        logger.warning("Ay %d uzunlugu %d gun — anormal!", i, gun_sayisi)
+
+# ══════════════════════════════════════════════
+# HİCRİ AY İSİMLERİ
+# ══════════════════════════════════════════════
 AYLAR = [
     "Muharrem", "Safer", "Rebiulevvel", "Rebiulahir",
     "Cemaziyelevvel", "Cemaziyelahir", "Recep",
@@ -189,10 +252,16 @@ OZEL = {
     (11,13): "Kurban Bayrami 4. Gunu",
 }
 
+# ══════════════════════════════════════════════
+# ANCHOR — 1 Ramazan 1446 = 1 Mart 2025
+# ══════════════════════════════════════════════
 ANCHOR_TARGET = datetime(2025, 3, 1).date()
 ANCHOR_INDEX  = min(range(len(MONTHS)), key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days))
 MUHARREM_1446 = ANCHOR_INDEX - 8
 
+# ══════════════════════════════════════════════
+# HİCRİ HESAP
+# ══════════════════════════════════════════════
 def get_hijri(check_date):
     current = None
     for i, m in enumerate(MONTHS):
@@ -228,7 +297,12 @@ def find_month_date(year_miladi, ay_index):
             return m, i
     return None, None
 
-REAL_RAMADAN = {
+# ══════════════════════════════════════════════
+# REFERANS VERİLERİ — 3 ülke karşılaştırması
+# ══════════════════════════════════════════════
+
+# Türkiye Diyanet (hesabi takvim)
+RAMAZAN_TURKIYE = {
     1995:date(1995,2,1),  1996:date(1996,1,22), 1997:date(1997,1,11),
     1998:date(1998,12,20),1999:date(1999,12,9), 2000:date(2000,11,27),
     2001:date(2001,11,16),2002:date(2002,11,6), 2003:date(2003,10,27),
@@ -242,7 +316,40 @@ REAL_RAMADAN = {
     2025:date(2025,3,1),
 }
 
-def parse_year(args, min_y=1995, max_y=2037):
+# Suudi Arabistan (gozlem bazli - Umm al-Qura)
+RAMAZAN_SUUDI = {
+    1995:date(1995,2,1),  1996:date(1996,1,21), 1997:date(1997,1,10),
+    1998:date(1998,12,20),1999:date(1999,12,9), 2000:date(2000,11,27),
+    2001:date(2001,11,16),2002:date(2002,11,6), 2003:date(2003,10,26),
+    2004:date(2004,10,15),2005:date(2005,10,4), 2006:date(2006,9,23),
+    2007:date(2007,9,13), 2008:date(2008,9,1),  2009:date(2009,8,22),
+    2010:date(2010,8,11), 2011:date(2011,8,1),  2012:date(2012,7,20),
+    2013:date(2013,7,9),  2014:date(2014,6,28), 2015:date(2015,6,18),
+    2016:date(2016,6,6),  2017:date(2017,5,27), 2018:date(2018,5,16),
+    2019:date(2019,5,5),  2020:date(2020,4,24), 2021:date(2021,4,13),
+    2022:date(2022,4,2),  2023:date(2023,3,23), 2024:date(2024,3,11),
+    2025:date(2025,3,1),
+}
+
+# Iran (karma - hesap + gozlem)
+RAMAZAN_IRAN = {
+    1995:date(1995,2,1),  1996:date(1996,1,22), 1997:date(1997,1,11),
+    1998:date(1998,12,21),1999:date(1999,12,10),2000:date(2000,11,28),
+    2001:date(2001,11,17),2002:date(2002,11,7), 2003:date(2003,10,27),
+    2004:date(2004,10,15),2005:date(2005,10,5), 2006:date(2006,9,24),
+    2007:date(2007,9,13), 2008:date(2008,9,2),  2009:date(2009,8,22),
+    2010:date(2010,8,11), 2011:date(2011,8,1),  2012:date(2012,7,20),
+    2013:date(2013,7,9),  2014:date(2014,6,29), 2015:date(2015,6,18),
+    2016:date(2016,6,7),  2017:date(2017,5,27), 2018:date(2018,5,17),
+    2019:date(2019,5,6),  2020:date(2020,4,24), 2021:date(2021,4,13),
+    2022:date(2022,4,2),  2023:date(2023,3,23), 2024:date(2024,3,11),
+    2025:date(2025,3,1),
+}
+
+# ══════════════════════════════════════════════
+# YARDIMCI
+# ══════════════════════════════════════════════
+def parse_year(args, min_y=1995, max_y=2040):
     if not args:
         raise ValueError("Lutfen bir yil girin.")
     try:
@@ -264,19 +371,31 @@ def parse_date_arg(args):
 async def reply_error(update, msg):
     await update.message.reply_text("Hata: " + msg)
 
+def fark_str(bot, ref):
+    if ref is None:
+        return "veri yok"
+    d = (bot - ref).days
+    if d == 0:
+        return "+0"
+    return ("+" if d > 0 else "") + str(d)
+
+# ══════════════════════════════════════════════
+# KOMUTLAR
+# ══════════════════════════════════════════════
 HELP_TEXT = (
-    "HICRI TAKVIM BOTU\n\n"
+    "HICRI TAKVIM BOTU — Saf Astronomik Sistem\n\n"
     "/bugun                          Bugunun Hicri tarihi\n"
     "/yil 2027                       Yil bazli takvim\n"
     "/ramazan 2027                   Ramazan baslangici\n"
-    "/arefe 2027                     Kurban Bayrami\n"
+    "/arefe 2027                     Kurban Bayrami tarihleri\n"
     "/bayramlar 2027                 Tum dini gunler\n"
     "/kacgun                         Ramazana kac gun kaldi\n"
-    "/hilal                          Hilal gorunurlugu\n"
+    "/hilal                          Bugun hilal durumu\n"
     "/miladiden 2026-03-20           Miladi > Hicri\n"
     "/hicridenmiladi 15 Ramazan 1446 Hicri > Miladi\n"
-    "/analiz                         Dogruluk analizi\n"
-    "/karsilastir 2026               Karsilastirma\n"
+    "/analiz                         Ramazan dogruluk analizi\n"
+    "/karsilastir 2025               3 ulke karsilastirmasi\n"
+    "/ayuzunluklari 2025             Ay gun sayilari\n"
     "/yardim                         Bu menu\n"
 )
 
@@ -289,8 +408,8 @@ async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now(timezone.utc).date()
     gun, ay_adi, ay_idx, hicri_yil = get_hijri(today)
-    ozel = OZEL.get((ay_idx, gun), "")
-    text = "Bugun: " + str(today) + "\nHicri: " + str(gun) + " " + ay_adi + " " + str(hicri_yil)
+    ozel  = OZEL.get((ay_idx, gun), "")
+    text  = "Bugun: " + str(today) + "\nHicri: " + str(gun) + " " + ay_adi + " " + str(hicri_yil)
     if ozel:
         text += "\n>>> " + ozel
     await update.message.reply_text(text)
@@ -305,9 +424,10 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, m in enumerate(MONTHS):
         if m.year == year:
             delta = i - MUHARREM_1446
-            idx  = delta % 12
-            hyil = 1446 + delta // 12
-            lines.append(AYLAR_TR[idx] + " " + str(hyil) + ": " + str(m))
+            idx   = delta % 12
+            hyil  = 1446 + delta // 12
+            gun_sayisi = (MONTHS[i+1] - MONTHS[i]).days if i+1 < len(MONTHS) else "?"
+            lines.append(AYLAR_TR[idx] + " " + str(hyil) + ": " + str(m) + " (" + str(gun_sayisi) + " gun)")
             found = True
     if not found:
         lines.append("Bu yil icin veri bulunamadi.")
@@ -336,11 +456,12 @@ async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m, _ = find_month_date(year, 11)
     if m:
         text = ("Kurban Bayrami " + str(year) + "\n"
-                "Arefe    : " + str(m + timedelta(days=8)) + "\n"
-                "Bayram 1 : " + str(m + timedelta(days=9)) + "\n"
-                "Bayram 2 : " + str(m + timedelta(days=10)) + "\n"
-                "Bayram 3 : " + str(m + timedelta(days=11)) + "\n"
-                "Bayram 4 : " + str(m + timedelta(days=12)))
+                "Zilhicce 1 : " + str(m) + "\n"
+                "Arefe      : " + str(m + timedelta(days=8)) + "\n"
+                "Bayram 1   : " + str(m + timedelta(days=9)) + "\n"
+                "Bayram 2   : " + str(m + timedelta(days=10)) + "\n"
+                "Bayram 3   : " + str(m + timedelta(days=11)) + "\n"
+                "Bayram 4   : " + str(m + timedelta(days=12)))
     else:
         text = str(year) + " icin veri bulunamadi."
     await update.message.reply_text(text)
@@ -356,14 +477,14 @@ async def bayramlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (9,2,"Ramazan Bayrami 2"),(9,3,"Ramazan Bayrami 3"),(11,9,"Arefe"),
         (11,10,"Kurban 1"),(11,11,"Kurban 2"),(11,12,"Kurban 3"),(11,13,"Kurban 4"),
     ]
-    lines = [str(year) + " Dini Gunler\n"]
+    lines = [str(year) + " Dini Gunler (Astronomik Takvim)\n"]
     found = False
     for ay_idx, gun, isim in LISTE:
         m, _ = find_month_date(year, ay_idx)
         if m:
             hedef = m + timedelta(days=gun - 1)
             if abs(hedef.year - year) <= 1:
-                lines.append(str(hedef) + " - " + isim)
+                lines.append(str(hedef) + "  " + isim)
                 found = True
     if not found:
         lines.append("Bu yil icin veri bulunamadi.")
@@ -401,32 +522,32 @@ async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
     if not nm:
         return await reply_error(update, "Yeni ay verisi bulunamadi.")
-    age_hours = (today - nm.date()).days * 24
-    alt, elong, q, w = get_best_params(today, nm)
-    score = hilal_score_weighted(today, nm)
 
-    if q >= 0.216:
-        durum = "Kolay gorunur - acik gozle kesin"
-    elif q >= -0.014:
-        durum = "Gorunur - normal kosullarda gorunur"
-    elif q >= -0.160:
-        durum = "Zor gorunur - iyi gozlemci gorebilir"
-    elif q >= -0.232:
+    age_hours          = (today - nm.date()).days * 24
+    gorunur, best_q, best_loc, detaylar = hilal_gorunur_global(today, nm)
+
+    if best_q >= 0.0:
+        durum = "Acik gozle gorunur (ODEH q >= 0)"
+    elif best_q >= -0.96:
         durum = "Optik aracla gorunebilir"
-    elif q >= -0.293:
-        durum = "Optik aracla zor gorunur"
     else:
         durum = "Gorunmez"
 
-    text = ("Hilal Durumu - " + str(today) + "\n\n"
-            "Son Yeni Ay : " + str(nm.date()) + "\n"
-            "Ay Yasi     : " + str(int(age_hours)) + " saat\n"
-            "Irtifa      : " + str(round(alt, 1)) + " derece\n"
-            "Elongasyon  : " + str(round(elong, 1)) + " derece\n"
-            "Yallop-q    : " + str(round(q, 3)) + "\n"
-            "Skor        : " + str(round(score, 1)) + "\n\n"
-            "Durum: " + durum)
-    await update.message.reply_text(text)
+    lines = ["Hilal Durumu - " + str(today) + "\n",
+             "Yeni Ay : " + str(nm.date()),
+             "Ay Yasi : " + str(int(age_hours)) + " saat",
+             "En iyi konum: " + best_loc,
+             "ODEH q  : " + str(round(best_q, 3)),
+             "Durum   : " + durum,
+             "\nKonum Detaylari:"]
+
+    for loc_name, p in detaylar.items():
+        if p["alt"] > 0:
+            lines.append(loc_name + ": alt=" + str(round(p["alt"],1)) +
+                         " elong=" + str(round(p["elong"],1)) +
+                         " q=" + str(round(p["q_odeh"],3)))
+
+    await update.message.reply_text("\n".join(lines))
 
 async def miladiden(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -446,7 +567,8 @@ async def miladiden(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def hicridenmiladi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
         return await reply_error(update,
-            "Kullanim: /hicridenmiladi <gun> <AyAdi> <HicriYil>\nOrnek: /hicridenmiladi 15 Ramazan 1446")
+            "Kullanim: /hicridenmiladi <gun> <AyAdi> <HicriYil>\n"
+            "Ornek: /hicridenmiladi 15 Ramazan 1446")
     try:
         gun       = int(context.args[0])
         ay_adi    = context.args[1].strip()
@@ -474,39 +596,43 @@ async def hicridenmiladi(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Analiz hesaplaniyor, lutfen bekleyin...")
-    lines   = ["Ramazan Dogruluk Analizi 1995-2025\n"]
-    perfect = 0
-    close   = 0
-    total   = 0
-    diffs   = []
-    for year, real in sorted(REAL_RAMADAN.items()):
-        m, _ = find_month_date(year, 8)
-        if not m:
-            lines.append("[?]  " + str(year) + " bulunamadi")
+    lines = ["RAMAZAN ANALIZI 1995-2025\n"
+             "Bot | TR | SA | IR | TR-fark | SA-fark | IR-fark\n"
+             + "-"*55]
+
+    tr_ok = sa_ok = ir_ok = 0
+    total = 0
+
+    for year in sorted(RAMAZAN_TURKIYE.keys()):
+        bot_m, _ = find_month_date(year, 8)
+        if not bot_m:
             continue
-        diff = (m - real).days
-        diffs.append(diff)
-        if diff == 0:
-            tag = "[OK]"
-            perfect += 1
-        elif abs(diff) == 1:
-            tag = "[~1]"
-            close += 1
-        else:
-            tag = "[X] "
-        sign = "+" if diff >= 0 else ""
-        lines.append(tag + " " + str(year) + " " + str(m) + " gercek:" + str(real) + " fark:" + sign + str(diff))
+
+        tr = RAMAZAN_TURKIYE.get(year)
+        sa = RAMAZAN_SUUDI.get(year)
+        ir = RAMAZAN_IRAN.get(year)
+
+        tr_d = fark_str(bot_m, tr)
+        sa_d = fark_str(bot_m, sa)
+        ir_d = fark_str(bot_m, ir)
+
+        if tr and (bot_m - tr).days == 0: tr_ok += 1
+        if sa and (bot_m - sa).days == 0: sa_ok += 1
+        if ir and (bot_m - ir).days == 0: ir_ok += 1
         total += 1
-    acc0 = (perfect / total) * 100 if total else 0
-    acc1 = ((perfect + close) / total) * 100 if total else 0
-    ort  = sum(abs(d) for d in diffs) / len(diffs) if diffs else 0
-    maks = max(abs(d) for d in diffs) if diffs else 0
-    lines.append("\nOzet\n"
-                 "Tam isabet (+-0) : %" + str(round(acc0,1)) + "\n"
-                 "+-1 gun          : %" + str(round(acc1,1)) + "\n"
-                 "Ort sapma        : " + str(round(ort,3)) + " gun\n"
-                 "Maks sapma       : " + str(maks) + " gun\n"
-                 "Test sayisi      : " + str(total))
+
+        lines.append(str(year) + "  Bot:" + str(bot_m) +
+                     "  TR:" + str(tr) +
+                     "  SA:" + str(sa) +
+                     "  IR:" + str(ir) +
+                     "  [" + tr_d + "|" + sa_d + "|" + ir_d + "]")
+
+    lines.append("\nOzet (tam isabet):")
+    lines.append("Turkiye : %" + str(round(tr_ok/total*100, 1)))
+    lines.append("Suudi   : %" + str(round(sa_ok/total*100, 1)))
+    lines.append("Iran    : %" + str(round(ir_ok/total*100, 1)))
+    lines.append("Test    : " + str(total) + " yil")
+
     msg = "\n".join(lines)
     for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
         await update.message.reply_text(chunk)
@@ -516,18 +642,46 @@ async def karsilastir(update: Update, context: ContextTypes.DEFAULT_TYPE):
         year = parse_year(context.args)
     except ValueError as e:
         return await reply_error(update, str(e))
-    m_hesap, _ = find_month_date(year, 8)
-    m_real     = REAL_RAMADAN.get(year)
+
+    bot_m, _ = find_month_date(year, 8)
+    tr = RAMAZAN_TURKIYE.get(year)
+    sa = RAMAZAN_SUUDI.get(year)
+    ir = RAMAZAN_IRAN.get(year)
+
     lines = [str(year) + " Ramazan Karsilastirmasi\n"]
-    lines.append("Bot (Astronomik) : " + str(m_hesap))
-    if m_real and m_hesap:
-        diff = (m_hesap - m_real).days
-        sign = "+" if diff >= 0 else ""
-        lines.append("Gercek/Referans  : " + str(m_real) + " (fark: " + sign + str(diff) + " gun)")
-    elif m_real:
-        lines.append("Gercek/Referans  : " + str(m_real))
-    else:
-        lines.append("Gercek/Referans  : Veri yok")
+    lines.append("Astronomik Bot : " + str(bot_m))
+    lines.append("Turkiye (TR)   : " + str(tr) + "  fark: " + fark_str(bot_m, tr))
+    lines.append("Suudi Arabistan: " + str(sa) + "  fark: " + fark_str(bot_m, sa))
+    lines.append("Iran           : " + str(ir) + "  fark: " + fark_str(bot_m, ir))
+
+    if tr and sa and ir and bot_m:
+        dates = [bot_m, tr, sa, ir]
+        if len(set(dates)) == 1:
+            lines.append("\nTum kaynaklar ayni gunu gosteriyor.")
+        else:
+            lines.append("\nFarkli kaynaklar farkli gunler gosteriyor.")
+
+    await update.message.reply_text("\n".join(lines))
+
+async def ayuzunluklari(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        year = parse_year(context.args)
+    except ValueError as e:
+        return await reply_error(update, str(e))
+
+    lines = [str(year) + " Ay Uzunluklari\n"]
+    found = False
+    for i, m in enumerate(MONTHS):
+        if m.year == year and i + 1 < len(MONTHS):
+            delta = i - MUHARREM_1446
+            idx   = delta % 12
+            hyil  = 1446 + delta // 12
+            gun_sayisi = (MONTHS[i+1] - m).days
+            lines.append(AYLAR_TR[idx] + " " + str(hyil) + ": " + str(m) + " -> " + str(gun_sayisi) + " gun")
+            found = True
+    if not found:
+        lines.append("Bu yil icin veri bulunamadi.")
+
     await update.message.reply_text("\n".join(lines))
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -553,9 +707,10 @@ def main():
     app.add_handler(CommandHandler("hicridenmiladi", hicridenmiladi))
     app.add_handler(CommandHandler("analiz",         analiz))
     app.add_handler(CommandHandler("karsilastir",    karsilastir))
+    app.add_handler(CommandHandler("ayuzunluklari",  ayuzunluklari))
     app.add_handler(MessageHandler(filters.COMMAND,  bilinmeyen))
     app.add_error_handler(error_handler)
-    logger.info("Hicri Takvim Botu aktif!")
+    logger.info("Hicri Takvim Botu — Saf Astronomik Sistem aktif!")
     app.run_polling()
 
 if __name__ == "__main__":
