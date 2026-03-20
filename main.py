@@ -58,33 +58,6 @@ def get_new_moons():
     ]
     return _new_moons_cache
 
-def get_months():
-    global _months_cache
-    if _months_cache is not None:
-        return _months_cache
-    logger.info("Takvim insa ediliyor...")
-    new_moons = get_new_moons()
-    months = []
-    prev_start = None
-    for nm in new_moons:
-        start = find_month_start(nm, prev_start)
-        months.append(start)
-        prev_start = start
-    _months_cache = sorted(months)
-    logger.info("Takvim hazir: %d ay.", len(_months_cache))
-    return _months_cache
-
-def get_anchor():
-    global _anchor_cache
-    if _anchor_cache is not None:
-        return _anchor_cache
-    months = get_months()
-    anchor_target = datetime(2025, 3, 1).date()
-    anchor_index  = min(range(len(months)), key=lambda i: abs((months[i] - anchor_target).days))
-    muharrem_1446 = anchor_index - 8
-    _anchor_cache = (anchor_index, muharrem_1446)
-    return _anchor_cache
-
 GOZLEM_NOKTALARI = {
     "Mekke":    wgs84.latlon(21.4225, 39.8262),
     "Medine":   wgs84.latlon(24.4672, 39.6151),
@@ -115,96 +88,154 @@ def odeh_q(alt_deg, elong_deg):
     ARCV = alt_deg
     return ARCV - (7.1651 - 6.3226*(W*0.01) + 7.0482*(W*0.01)**2 - 0.3014*(W*0.01)**3)
 
-def evaluate_location(loc, check_date, nm):
+def hilal_gorunur_mu(check_date, nm):
+    """
+    check_date aksaminda hilal gorunur mu?
+    nm: o aya ait konjunksiyon zamani
+    Kural: sunset aninda ay yasi >= 13.5 saat olmali
+    En az 1 konumda ODEH q >= 0 ise gorunur
+    """
     ts, eph, earth, moon, sun = get_skyfield()
-    sunset_h   = get_sunset_utc(loc, check_date.year, check_date.month, check_date.day)
-    best_q     = -99.0
-    best_alt   = -99.0
-    best_elong = 0.0
-
-    for offset_min in range(15, 70, 5):
-        hf     = sunset_h + offset_min / 60.0
-        hour   = int(hf)
-        minute = int((hf - hour) * 60)
-        if hour >= 24:
-            break
-
-        t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
-        obs   = (earth + loc).at(t)
-        m_app = obs.observe(moon).apparent()
-        s_app = obs.observe(sun).apparent()
-        alt_m, _, _ = m_app.altaz()
-        elong        = m_app.separation_from(s_app).degrees
-        alt_deg      = alt_m.degrees
-
-        if alt_deg <= 0:
-            continue
-
-        # Konjunksiyondan sonra sunset aninda ay en az 13.5 saat olmali
-        sunset_dt = datetime(
-            check_date.year, check_date.month, check_date.day,
-            int(sunset_h), int((sunset_h % 1) * 60),
-            tzinfo=timezone.utc
-        )
-        if (sunset_dt - nm).total_seconds() / 3600.0 < 13.5:
-            continue
-
-        q = odeh_q(alt_deg, elong)
-        if q > best_q:
-            best_q     = q
-            best_alt   = alt_deg
-            best_elong = elong
-
-    return {"alt": best_alt, "elong": best_elong, "q": best_q}
-
-def hilal_gorunur_global(check_date, nm):
     best_q   = -99.0
     best_loc = ""
     gorunur  = False
     detaylar = {}
 
     for loc_name, loc in GOZLEM_NOKTALARI.items():
-        p = evaluate_location(loc, check_date, nm)
-        detaylar[loc_name] = p
-        if p["q"] > best_q:
-            best_q   = p["q"]
+        sunset_h   = get_sunset_utc(loc, check_date.year, check_date.month, check_date.day)
+        best_q_loc = -99.0
+        best_alt   = -99.0
+        best_elong = 0.0
+
+        for offset_min in range(15, 70, 5):
+            hf     = sunset_h + offset_min / 60.0
+            hour   = int(hf)
+            minute = int((hf - hour) * 60)
+            if hour >= 24:
+                break
+
+            t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
+            obs   = (earth + loc).at(t)
+            m_app = obs.observe(moon).apparent()
+            s_app = obs.observe(sun).apparent()
+            alt_m, _, _ = m_app.altaz()
+            elong        = m_app.separation_from(s_app).degrees
+            alt_deg      = alt_m.degrees
+
+            if alt_deg <= 0:
+                continue
+
+            sunset_dt = datetime(
+                check_date.year, check_date.month, check_date.day,
+                int(sunset_h), int((sunset_h % 1) * 60),
+                tzinfo=timezone.utc
+            )
+            age_saat = (sunset_dt - nm).total_seconds() / 3600.0
+            if age_saat < 13.5:
+                continue
+
+            q = odeh_q(alt_deg, elong)
+            if q > best_q_loc:
+                best_q_loc = q
+                best_alt   = alt_deg
+                best_elong = elong
+
+        detaylar[loc_name] = {"alt": best_alt, "elong": best_elong, "q": best_q_loc}
+
+        if best_q_loc > best_q:
+            best_q   = best_q_loc
             best_loc = loc_name
-        if p["q"] >= 0.0:
+
+        if best_q_loc >= 0.0:
             gorunur = True
 
     return gorunur, best_q, best_loc, detaylar
 
-def find_month_start(nm, prev_month_start=None):
+def build_calendar():
     """
-    Dogru Hicri takvim mantiği:
+    Dogru Hicri takvim insa algoritmasi:
 
-    Onceki ayin 29. gunu aksami hilal ara.
-    Gorunurse: yeni ay 30. gunün ertesi baslar (onceki ay 29 gun).
-    Gorunmezse: onceki ay 30 gune tamamlanir, yeni ay 31. gun baslar.
+    Her ay icin:
+    1. Mevcut ayin 29. gunu aksami hilal ara
+       (29. gun = ay_basi + 28 gun, cunku gun 1 = ay_basi)
+    2. Gorunduyse: yeni ay = 29. gun + 1 (ay 29 gun oldu)
+    3. Gorünmediyse: yeni ay = 29. gun + 2 (ay 30 gun oldu)
 
-    Eger prev_month_start bilinmiyorsa (ilk ay):
-    Konjunksiyon + 1 gun = D1, konjunksiyon + 2 gun = D2 mantigi.
+    Hangi konjunksiyon bu aya ait?
+    Her ay baslangicinin icinde bulundugu konjunksiyon.
     """
-    if prev_month_start is None:
-        # Bootstrap: ilk ay icin klasik D1/D2 mantigi
-        d1 = nm.date() + timedelta(days=1)
-        gorunur, q, loc, _ = hilal_gorunur_global(d1, nm)
-        if gorunur:
-            return d1
-        return d1 + timedelta(days=1)
+    new_moons = get_new_moons()
 
-    # Onceki ayin 29. gunu
-    gun29 = prev_month_start + timedelta(days=28)  # 0-index: gun 1 = prev_start, gun 29 = +28
+    def get_nm_for_date(d):
+        best = None
+        for nm in new_moons:
+            if nm.date() <= d:
+                best = nm
+        return best
 
-    # O gece hilal gorünür mü?
-    gorunur, q, loc, _ = hilal_gorunur_global(gun29, nm)
-
+    # Bootstrap: ilk ay baslangicini bul
+    # 1993 basini konjunksiyondan hesapla
+    first_nm = new_moons[0]
+    d1 = first_nm.date() + timedelta(days=1)
+    gorunur, _, _, _ = hilal_gorunur_mu(d1, first_nm)
     if gorunur:
-        # Hilal goruldu: yeni ay gun29'un ertesi gunü baslar
-        return gun29 + timedelta(days=1)
+        first_start = d1
     else:
-        # Hilal gorulmedi: ay 30 gune tamamlandi
-        return gun29 + timedelta(days=2)
+        first_start = d1 + timedelta(days=1)
+
+    months = [first_start]
+
+    # Her bir sonraki ay: onceki ayin 29. gunu aksamini kontrol et
+    for _ in range(550):  # ~46 yil
+        prev_start = months[-1]
+        gun29      = prev_start + timedelta(days=28)  # gun1=prev_start, gun29=+28
+
+        # Bu gece hangi konjunksiyona gore degerlendiriyoruz?
+        # gun29, artik yeni aya ait konjunksiyonun oncesindedir
+        # O geceye ait yeni ayi bul: gun29'dan sonraki ilk konjunksiyon
+        nm_for_29 = None
+        for nm in new_moons:
+            if nm.date() >= gun29 - timedelta(days=3):
+                nm_for_29 = nm
+                break
+
+        if nm_for_29 is None:
+            break
+
+        gorunur, _, _, _ = hilal_gorunur_mu(gun29, nm_for_29)
+
+        if gorunur:
+            next_start = gun29 + timedelta(days=1)  # ay 29 gun
+        else:
+            next_start = gun29 + timedelta(days=2)  # ay 30 gun
+
+        months.append(next_start)
+
+        # 2040 sonrasina gerek yok
+        if next_start.year > 2040:
+            break
+
+    return sorted(months)
+
+def get_months():
+    global _months_cache
+    if _months_cache is not None:
+        return _months_cache
+    logger.info("Takvim insa ediliyor...")
+    _months_cache = build_calendar()
+    logger.info("Takvim hazir: %d ay.", len(_months_cache))
+    return _months_cache
+
+def get_anchor():
+    global _anchor_cache
+    if _anchor_cache is not None:
+        return _anchor_cache
+    months = get_months()
+    anchor_target = datetime(2025, 3, 1).date()
+    anchor_index  = min(range(len(months)), key=lambda i: abs((months[i] - anchor_target).days))
+    muharrem_1446 = anchor_index - 8
+    _anchor_cache = (anchor_index, muharrem_1446)
+    return _anchor_cache
 
 AYLAR = [
     "Muharrem", "Safer", "Rebiulevvel", "Rebiulahir",
@@ -511,7 +542,7 @@ async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hilal hesaplaniyor...")
     loop = asyncio.get_event_loop()
     gorunur, best_q, best_loc, detaylar = await loop.run_in_executor(
-        None, hilal_gorunur_global, today, nm
+        None, hilal_gorunur_mu, today, nm
     )
     if best_q >= 0.0:
         durum = "Acik gozle gorunur"
@@ -665,7 +696,7 @@ async def warm_up_cache(app):
     logger.info("Takvim arka planda hazirlanıyor...")
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, get_months)
-    logger.info("Takvim hazir.")
+    logger.info("Takvim hazir, bot tam kapasitede.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Hata: %s", context.error, exc_info=True)
