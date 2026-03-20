@@ -1,114 +1,309 @@
-import os
-import logging
-from datetime import datetime, timedelta
+import datetime
+import numpy as np
+from telegram.ext import Updater, CommandHandler
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
-TOKEN = os.getenv("TOKEN")
-logging.basicConfig(level=logging.INFO)
+from skyfield.api import load, Topos
+from skyfield.almanac import find_discrete, moon_phases
 
 # =========================
-# DATASET (SEN DOLDURACAKSIN)
+# CONFIG
 # =========================
-AREFE_DATA = {
-    # örnek:
-    # 2025: "2025-06-05",
+TOKEN = "BOT_TOKEN"
+
+THRESHOLD = 0.6
+
+WEIGHTS = {
+    "MECCA": 0.5,
+    "ANKARA": 0.3,
+    "TEHRAN": 0.2
+}
+
+LOCATIONS = {
+    "MECCA": Topos(21.3891, 39.8579),
+    "ANKARA": Topos(39.9334, 32.8597),
+    "TEHRAN": Topos(35.6892, 51.3890),
+}
+
+ANCHOR_AREFE = datetime.date(1995, 5, 9)
+
+# =========================
+# DATASET (örnek, genişlet)
+# =========================
+REAL_EVENTS = {
+    2023: {"ramadan": datetime.date(2023,3,23), "eid_fitr": datetime.date(2023,4,21), "eid_adha": datetime.date(2023,6,28)},
+    2024: {"ramadan": datetime.date(2024,3,11), "eid_fitr": datetime.date(2024,4,10), "eid_adha": datetime.date(2024,6,16)},
+    2025: {"ramadan": datetime.date(2025,3,1),  "eid_fitr": datetime.date(2025,3,30), "eid_adha": datetime.date(2025,6,6)},
+}
+
+COUNTRY_DATA = {
+    2023: {
+        "SA": REAL_EVENTS[2023],
+        "TR": REAL_EVENTS[2023],
+        "IR": REAL_EVENTS[2023],
+    }
 }
 
 # =========================
-# AREFE ANALİZ
+# SKYFIELD
 # =========================
-async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+ts = load.timescale()
+eph = load('de421.bsp')
 
-    if len(AREFE_DATA) < 5:
-        await update.message.reply_text("❌ En az 5 veri gir")
-        return
-
-    dates = []
-
-    for y, d in AREFE_DATA.items():
-        dt = datetime.fromisoformat(d)
-        dates.append(dt)
-
-    # farkları hesapla
-    diffs = []
-
-    for i in range(1, len(dates)):
-        diff = (dates[i] - dates[i-1]).days
-        diffs.append(diff)
-
-    avg = sum(diffs) / len(diffs)
-
-    text = "📊 AREFE ANALİZ\n\n"
-
-    for i, d in enumerate(diffs):
-        text += f"Yıl {i}: {d} gün\n"
-
-    text += f"\n📉 Ortalama yıl kayması: {round(avg,2)} gün"
-
-    # hicri yıl ~354 gün
-    text += "\n\n🧠 MODEL\n"
-    text += f"Hicri yıl: ~354 gün\n"
-    text += f"Senin veri: {round(avg,2)}\n"
-
-    if avg > 354:
-        text += "\n📉 Sistem gecikmeli"
-    else:
-        text += "\n📈 Sistem erken"
-
-    await update.message.reply_text(text)
+earth = eph['earth']
+moon = eph['moon']
+sun = eph['sun']
 
 # =========================
-# VERİ EKLE
+# ASTRONOMİ
 # =========================
-async def ekle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    try:
-        y = int(context.args[0])
-        d = context.args[1]
+def moon_age(date):
+    t0 = ts.utc(date.year, date.month, date.day)
+    t1 = ts.utc(date.year, date.month, date.day + 2)
 
-        AREFE_DATA[y] = d
+    times, phases = find_discrete(t0, t1, moon_phases(eph))
 
-        await update.message.reply_text(f"✅ Eklendi: {y} → {d}")
+    for t, p in zip(times, phases):
+        if p == 0:
+            nm = t.utc_datetime()
+            delta = datetime.datetime.combine(date, datetime.time()) - nm
+            return abs(delta.total_seconds()) / 3600
 
-    except:
-        await update.message.reply_text("❌ Format: /ekle 2025 2025-06-05")
+    return 24
+
+
+def get_params(date, location):
+    t = ts.utc(date.year, date.month, date.day, 18)
+
+    obs = earth + location
+    ast = obs.at(t).observe(moon)
+    alt, az, _ = ast.apparent().altaz()
+
+    sun_ast = obs.at(t).observe(sun)
+    elong = ast.separation_from(sun_ast).degrees
+
+    return alt.degrees, elong
+
+
+def score(age, alt, elong):
+    a = min(age / 24, 1)
+    b = min(elong / 12, 1)
+    c = min(max(alt, 0) / 10, 1)
+    d = min(age / 30, 1)
+
+    return 0.35*a + 0.25*b + 0.20*c + 0.20*d
+
 
 # =========================
-# LİSTE
+# AY BAŞLANGICI
 # =========================
-async def liste(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    text = "📅 DATASET\n\n"
+def find_start(date):
+    global THRESHOLD
 
-    for y,d in sorted(AREFE_DATA.items()):
-        text += f"{y}: {d}\n"
+    for i in range(3):
+        d = date + datetime.timedelta(days=i)
+        total = 0
 
-    await update.message.reply_text(text)
+        for name, loc in LOCATIONS.items():
+            age = moon_age(d)
+            alt, elong = get_params(d, loc)
+            s = score(age, alt, elong)
+
+            total += s * WEIGHTS[name]
+
+        if total >= THRESHOLD:
+            return d, total
+
+    return date + datetime.timedelta(days=1), total
+
 
 # =========================
-# START
+# HİCRİ AYLAR
 # =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    await update.message.reply_text(
-"""🧠 AREFE TRAIN BOT
+def generate_months(year):
+    date = datetime.date(year,1,1)
+    months = []
 
-/ekle 2025 2025-06-05
-/liste
-/analiz"""
-    )
+    for _ in range(12):
+        start, _ = find_start(date)
+        months.append(start)
+        date = start + datetime.timedelta(days=29)
+
+    return months
+
+
+def get_events(year):
+    m = generate_months(year)
+
+    ramadan = m[8]
+    fitr = m[9]
+    dh = m[11]
+
+    arefe = dh + datetime.timedelta(days=8)
+    adha = dh + datetime.timedelta(days=9)
+
+    return {
+        "ramadan": ramadan,
+        "eid_fitr": fitr,
+        "arefe": arefe,
+        "eid_adha": adha
+    }
 
 # =========================
-# APP
+# ANALİZ
 # =========================
-app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("ekle", ekle))
-app.add_handler(CommandHandler("liste", liste))
-app.add_handler(CommandHandler("analiz", analiz))
+def analyze_30():
+    report = ""
+    correct = 0
+    total = 0
 
-print("🚀 AREFE TRAIN BOT AKTİF")
-app.run_polling()
+    for y in range(1995, 2025):
+        pred = get_events(y)
+
+        report += f"\n📅 {y}\n"
+
+        if y in REAL_EVENTS:
+            real = REAL_EVENTS[y]
+
+            d1 = (pred["ramadan"] - real["ramadan"]).days
+            d2 = (pred["eid_fitr"] - real["eid_fitr"]).days
+            d3 = (pred["eid_adha"] - real["eid_adha"]).days
+
+            report += f"Ramazan: {pred['ramadan']} ({d1})\n"
+            report += f"Fitr: {pred['eid_fitr']} ({d2})\n"
+            report += f"Adha: {pred['eid_adha']} ({d3})\n"
+
+            if abs(d1)<=1 and abs(d2)<=1 and abs(d3)<=1:
+                correct += 1
+
+            total += 1
+
+    acc = (correct/total)*100 if total else 0
+    report += f"\n📊 DOĞRULUK: %{round(acc,2)}"
+
+    return report
+
+
+def country_analysis(year):
+    pred = get_events(year)
+    res = ""
+
+    if year not in COUNTRY_DATA:
+        return "Veri yok"
+
+    for c in COUNTRY_DATA[year]:
+        real = COUNTRY_DATA[year][c]
+
+        d1 = (pred["ramadan"] - real["ramadan"]).days
+        d2 = (pred["eid_fitr"] - real["eid_fitr"]).days
+        d3 = (pred["eid_adha"] - real["eid_adha"]).days
+
+        avg = (abs(d1)+abs(d2)+abs(d3))/3
+
+        res += f"\n🌍 {c}\nRamazan:{d1} Fitr:{d2} Adha:{d3}\nAvg:{round(avg,2)}\n"
+
+    return res
+
+
+# =========================
+# ML TRAINING
+# =========================
+
+def loss():
+    total = 0
+    count = 0
+
+    for y in REAL_EVENTS:
+        pred = get_events(y)
+        real = REAL_EVENTS[y]
+
+        total += abs((pred["ramadan"] - real["ramadan"]).days)
+        total += abs((pred["eid_fitr"] - real["eid_fitr"]).days)
+        total += abs((pred["eid_adha"] - real["eid_adha"]).days)
+
+        count += 3
+
+    return total / count if count else 999
+
+
+def train():
+    global THRESHOLD, WEIGHTS
+
+    best = loss()
+
+    for _ in range(50):
+
+        new_t = THRESHOLD + np.random.uniform(-0.02,0.02)
+
+        new_w = {k: max(0, v+np.random.uniform(-0.1,0.1)) for k,v in WEIGHTS.items()}
+        s = sum(new_w.values())
+        new_w = {k:v/s for k,v in new_w.items()}
+
+        old_t, old_w = THRESHOLD, WEIGHTS.copy()
+
+        THRESHOLD = new_t
+        WEIGHTS = new_w
+
+        l = loss()
+
+        if l < best:
+            best = l
+        else:
+            THRESHOLD, WEIGHTS = old_t, old_w
+
+    return best
+
+# =========================
+# TELEGRAM
+# =========================
+
+def start(update, context):
+    update.message.reply_text("🌙 Hicri AI Sistem Aktif\n\n/ay YYYY-MM-DD\n/events YYYY\n/analyze\n/country YYYY\n/train")
+
+def ay(update, context):
+    y,m,d = map(int, context.args[0].split("-"))
+    date = datetime.date(y,m,d)
+
+    s, sc = find_start(date)
+
+    update.message.reply_text(f"{s} skor:{round(sc,3)}")
+
+def events(update, context):
+    y = int(context.args[0])
+    e = get_events(y)
+
+    msg = f"{y}\nRamazan:{e['ramadan']}\nFitr:{e['eid_fitr']}\nArefe:{e['arefe']}\nAdha:{e['eid_adha']}"
+    update.message.reply_text(msg)
+
+def analyze(update, context):
+    r = analyze_30()
+    for i in range(0,len(r),3500):
+        update.message.reply_text(r[i:i+3500])
+
+def country(update, context):
+    y = int(context.args[0])
+    update.message.reply_text(country_analysis(y))
+
+def train_cmd(update, context):
+    l = train()
+    update.message.reply_text(f"Training OK\nLoss:{round(l,3)}\nT:{round(THRESHOLD,3)}\nW:{WEIGHTS}")
+
+def main():
+    up = Updater(TOKEN, use_context=True)
+    dp = up.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("ay", ay))
+    dp.add_handler(CommandHandler("events", events))
+    dp.add_handler(CommandHandler("analyze", analyze))
+    dp.add_handler(CommandHandler("country", country))
+    dp.add_handler(CommandHandler("train", train_cmd))
+
+    up.start_polling()
+    up.idle()
+
+if __name__ == "__main__":
+    main()
