@@ -1,6 +1,9 @@
+import os
 import datetime
 import numpy as np
-from telegram.ext import Updater, CommandHandler
+
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 from skyfield.api import load, Topos
 from skyfield.almanac import find_discrete, moon_phases
@@ -8,7 +11,10 @@ from skyfield.almanac import find_discrete, moon_phases
 # =========================
 # CONFIG
 # =========================
-TOKEN = "BOT_TOKEN"
+TOKEN = os.getenv("TOKEN")
+
+if not TOKEN:
+    raise ValueError("TOKEN env bulunamadı")
 
 THRESHOLD = 0.6
 
@@ -24,10 +30,8 @@ LOCATIONS = {
     "TEHRAN": Topos(35.6892, 51.3890),
 }
 
-ANCHOR_AREFE = datetime.date(1995, 5, 9)
-
 # =========================
-# DATASET (örnek, genişlet)
+# DATASET (genişlet)
 # =========================
 REAL_EVENTS = {
     2023: {"ramadan": datetime.date(2023,3,23), "eid_fitr": datetime.date(2023,4,21), "eid_adha": datetime.date(2023,6,28)},
@@ -35,16 +39,8 @@ REAL_EVENTS = {
     2025: {"ramadan": datetime.date(2025,3,1),  "eid_fitr": datetime.date(2025,3,30), "eid_adha": datetime.date(2025,6,6)},
 }
 
-COUNTRY_DATA = {
-    2023: {
-        "SA": REAL_EVENTS[2023],
-        "TR": REAL_EVENTS[2023],
-        "IR": REAL_EVENTS[2023],
-    }
-}
-
 # =========================
-# SKYFIELD
+# SKYFIELD INIT
 # =========================
 ts = load.timescale()
 eph = load('de421.bsp')
@@ -58,31 +54,39 @@ sun = eph['sun']
 # =========================
 
 def moon_age(date):
-    t0 = ts.utc(date.year, date.month, date.day)
-    t1 = ts.utc(date.year, date.month, date.day + 2)
+    try:
+        t0 = ts.utc(date.year, date.month, date.day)
+        t1 = ts.utc(date.year, date.month, date.day + 2)
 
-    times, phases = find_discrete(t0, t1, moon_phases(eph))
+        times, phases = find_discrete(t0, t1, moon_phases(eph))
 
-    for t, p in zip(times, phases):
-        if p == 0:
-            nm = t.utc_datetime()
-            delta = datetime.datetime.combine(date, datetime.time()) - nm
-            return abs(delta.total_seconds()) / 3600
+        for t, p in zip(times, phases):
+            if p == 0:
+                nm = t.utc_datetime()
+                delta = datetime.datetime.combine(date, datetime.time()) - nm
+                return abs(delta.total_seconds()) / 3600
+
+    except:
+        pass
 
     return 24
 
 
 def get_params(date, location):
-    t = ts.utc(date.year, date.month, date.day, 18)
+    try:
+        t = ts.utc(date.year, date.month, date.day, 18)
 
-    obs = earth + location
-    ast = obs.at(t).observe(moon)
-    alt, az, _ = ast.apparent().altaz()
+        obs = earth + location
+        ast = obs.at(t).observe(moon)
+        alt, az, _ = ast.apparent().altaz()
 
-    sun_ast = obs.at(t).observe(sun)
-    elong = ast.separation_from(sun_ast).degrees
+        sun_ast = obs.at(t).observe(sun)
+        elong = ast.separation_from(sun_ast).degrees
 
-    return alt.degrees, elong
+        return alt.degrees, elong
+
+    except:
+        return 0, 0
 
 
 def score(age, alt, elong):
@@ -93,14 +97,11 @@ def score(age, alt, elong):
 
     return 0.35*a + 0.25*b + 0.20*c + 0.20*d
 
-
 # =========================
 # AY BAŞLANGICI
 # =========================
 
 def find_start(date):
-    global THRESHOLD
-
     for i in range(3):
         d = date + datetime.timedelta(days=i)
         total = 0
@@ -117,9 +118,8 @@ def find_start(date):
 
     return date + datetime.timedelta(days=1), total
 
-
 # =========================
-# HİCRİ AYLAR
+# HİCRİ OLAYLAR
 # =========================
 
 def generate_months(year):
@@ -160,7 +160,7 @@ def analyze_30():
     correct = 0
     total = 0
 
-    for y in range(1995, 2025):
+    for y in range(2000, 2026):
         pred = get_events(y)
 
         report += f"\n📅 {y}\n"
@@ -186,30 +186,8 @@ def analyze_30():
 
     return report
 
-
-def country_analysis(year):
-    pred = get_events(year)
-    res = ""
-
-    if year not in COUNTRY_DATA:
-        return "Veri yok"
-
-    for c in COUNTRY_DATA[year]:
-        real = COUNTRY_DATA[year][c]
-
-        d1 = (pred["ramadan"] - real["ramadan"]).days
-        d2 = (pred["eid_fitr"] - real["eid_fitr"]).days
-        d3 = (pred["eid_adha"] - real["eid_adha"]).days
-
-        avg = (abs(d1)+abs(d2)+abs(d3))/3
-
-        res += f"\n🌍 {c}\nRamazan:{d1} Fitr:{d2} Adha:{d3}\nAvg:{round(avg,2)}\n"
-
-    return res
-
-
 # =========================
-# ML TRAINING
+# ML TRAIN
 # =========================
 
 def loss():
@@ -234,8 +212,7 @@ def train():
 
     best = loss()
 
-    for _ in range(50):
-
+    for _ in range(30):
         new_t = THRESHOLD + np.random.uniform(-0.02,0.02)
 
         new_w = {k: max(0, v+np.random.uniform(-0.1,0.1)) for k,v in WEIGHTS.items()}
@@ -257,53 +234,54 @@ def train():
     return best
 
 # =========================
-# TELEGRAM
+# TELEGRAM (ASYNC)
 # =========================
 
-def start(update, context):
-    update.message.reply_text("🌙 Hicri AI Sistem Aktif\n\n/ay YYYY-MM-DD\n/events YYYY\n/analyze\n/country YYYY\n/train")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🌙 Sistem aktif\n/ay\n/events\n/analyze\n/train")
 
-def ay(update, context):
-    y,m,d = map(int, context.args[0].split("-"))
-    date = datetime.date(y,m,d)
+async def ay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        y,m,d = map(int, context.args[0].split("-"))
+        date = datetime.date(y,m,d)
 
-    s, sc = find_start(date)
+        s, sc = find_start(date)
 
-    update.message.reply_text(f"{s} skor:{round(sc,3)}")
+        await update.message.reply_text(f"{s}\nSkor:{round(sc,3)}")
+    except:
+        await update.message.reply_text("Format: /ay 2026-03-20")
 
-def events(update, context):
+async def events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     y = int(context.args[0])
     e = get_events(y)
 
     msg = f"{y}\nRamazan:{e['ramadan']}\nFitr:{e['eid_fitr']}\nArefe:{e['arefe']}\nAdha:{e['eid_adha']}"
-    update.message.reply_text(msg)
+    await update.message.reply_text(msg)
 
-def analyze(update, context):
+async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r = analyze_30()
     for i in range(0,len(r),3500):
-        update.message.reply_text(r[i:i+3500])
+        await update.message.reply_text(r[i:i+3500])
 
-def country(update, context):
-    y = int(context.args[0])
-    update.message.reply_text(country_analysis(y))
-
-def train_cmd(update, context):
+async def train_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     l = train()
-    update.message.reply_text(f"Training OK\nLoss:{round(l,3)}\nT:{round(THRESHOLD,3)}\nW:{WEIGHTS}")
+    await update.message.reply_text(f"Training OK\nLoss:{round(l,3)}\nT:{round(THRESHOLD,3)}\nW:{WEIGHTS}")
+
+# =========================
+# MAIN
+# =========================
 
 def main():
-    up = Updater(TOKEN, use_context=True)
-    dp = up.dispatcher
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("ay", ay))
-    dp.add_handler(CommandHandler("events", events))
-    dp.add_handler(CommandHandler("analyze", analyze))
-    dp.add_handler(CommandHandler("country", country))
-    dp.add_handler(CommandHandler("train", train_cmd))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ay", ay))
+    app.add_handler(CommandHandler("events", events))
+    app.add_handler(CommandHandler("analyze", analyze))
+    app.add_handler(CommandHandler("train", train_cmd))
 
-    up.start_polling()
-    up.idle()
+    print("Bot çalışıyor...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
