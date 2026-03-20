@@ -12,17 +12,10 @@ from skyfield.almanac import find_discrete, moon_phases
 # CONFIG
 # =========================
 TOKEN = os.getenv("TOKEN")
-
 if not TOKEN:
     raise ValueError("TOKEN env bulunamadı")
 
 THRESHOLD = 0.6
-
-WEIGHTS = {
-    "MECCA": 0.5,
-    "ANKARA": 0.3,
-    "TEHRAN": 0.2
-}
 
 LOCATIONS = {
     "MECCA": Topos(21.3891, 39.8579),
@@ -30,8 +23,16 @@ LOCATIONS = {
     "TEHRAN": Topos(35.6892, 51.3890),
 }
 
+WEIGHTS = {
+    "MECCA": 0.5,
+    "ANKARA": 0.3,
+    "TEHRAN": 0.2
+}
+
+ANCHOR_AREFE = datetime.date(1995, 5, 9)
+
 # =========================
-# DATASET (genişlet)
+# DATASET (örnek)
 # =========================
 REAL_EVENTS = {
     2023: {"ramadan": datetime.date(2023,3,23), "eid_fitr": datetime.date(2023,4,21), "eid_adha": datetime.date(2023,6,28)},
@@ -65,7 +66,6 @@ def moon_age(date):
                 nm = t.utc_datetime()
                 delta = datetime.datetime.combine(date, datetime.time()) - nm
                 return abs(delta.total_seconds()) / 3600
-
     except:
         pass
 
@@ -84,7 +84,6 @@ def get_params(date, location):
         elong = ast.separation_from(sun_ast).degrees
 
         return alt.degrees, elong
-
     except:
         return 0, 0
 
@@ -97,52 +96,51 @@ def score(age, alt, elong):
 
     return 0.35*a + 0.25*b + 0.20*c + 0.20*d
 
-# =========================
-# AY BAŞLANGICI
-# =========================
 
-def find_start(date):
-    for i in range(3):
+def refine_start(date):
+    # astronomi ile ince ayar
+    for i in range(2):
         d = date + datetime.timedelta(days=i)
         total = 0
 
         for name, loc in LOCATIONS.items():
             age = moon_age(d)
             alt, elong = get_params(d, loc)
-            s = score(age, alt, elong)
-
-            total += s * WEIGHTS[name]
+            total += score(age, alt, elong) * WEIGHTS[name]
 
         if total >= THRESHOLD:
-            return d, total
+            return d
 
-    return date + datetime.timedelta(days=1), total
+    return date
+
+# =========================
+# AREFE ANCHOR MODEL
+# =========================
+
+def estimate_arefe(year):
+    diff = year - 1995
+    days = int(diff * 354.367)
+    return ANCHOR_AREFE + datetime.timedelta(days=days)
 
 # =========================
 # HİCRİ OLAYLAR
 # =========================
 
-def generate_months(year):
-    date = datetime.date(year,1,1)
-    months = []
-
-    for _ in range(12):
-        start, _ = find_start(date)
-        months.append(start)
-        date = start + datetime.timedelta(days=29)
-
-    return months
-
-
 def get_events(year):
-    m = generate_months(year)
+    arefe = estimate_arefe(year)
 
-    ramadan = m[8]
-    fitr = m[9]
-    dh = m[11]
+    # Zilhicce başlangıcı
+    dh_start = arefe - datetime.timedelta(days=8)
 
-    arefe = dh + datetime.timedelta(days=8)
-    adha = dh + datetime.timedelta(days=9)
+    # Ramazan approx (9 ay geri)
+    ramadan = dh_start - datetime.timedelta(days=266)
+    ramadan = refine_start(ramadan)
+
+    # Fitr
+    fitr = ramadan + datetime.timedelta(days=29)
+
+    # Kurban
+    adha = dh_start + datetime.timedelta(days=9)
 
     return {
         "ramadan": ramadan,
@@ -208,48 +206,36 @@ def loss():
 
 
 def train():
-    global THRESHOLD, WEIGHTS
+    global THRESHOLD
 
     best = loss()
 
     for _ in range(30):
         new_t = THRESHOLD + np.random.uniform(-0.02,0.02)
-
-        new_w = {k: max(0, v+np.random.uniform(-0.1,0.1)) for k,v in WEIGHTS.items()}
-        s = sum(new_w.values())
-        new_w = {k:v/s for k,v in new_w.items()}
-
-        old_t, old_w = THRESHOLD, WEIGHTS.copy()
+        old_t = THRESHOLD
 
         THRESHOLD = new_t
-        WEIGHTS = new_w
-
         l = loss()
 
         if l < best:
             best = l
         else:
-            THRESHOLD, WEIGHTS = old_t, old_w
+            THRESHOLD = old_t
 
     return best
 
 # =========================
-# TELEGRAM (ASYNC)
+# TELEGRAM
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🌙 Sistem aktif\n/ay\n/events\n/analyze\n/train")
 
 async def ay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        y,m,d = map(int, context.args[0].split("-"))
-        date = datetime.date(y,m,d)
-
-        s, sc = find_start(date)
-
-        await update.message.reply_text(f"{s}\nSkor:{round(sc,3)}")
-    except:
-        await update.message.reply_text("Format: /ay 2026-03-20")
+    y,m,d = map(int, context.args[0].split("-"))
+    date = datetime.date(y,m,d)
+    result = refine_start(date)
+    await update.message.reply_text(str(result))
 
 async def events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     y = int(context.args[0])
@@ -265,7 +251,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def train_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     l = train()
-    await update.message.reply_text(f"Training OK\nLoss:{round(l,3)}\nT:{round(THRESHOLD,3)}\nW:{WEIGHTS}")
+    await update.message.reply_text(f"Training OK\nLoss:{round(l,3)}\nT:{round(THRESHOLD,3)}")
 
 # =========================
 # MAIN
