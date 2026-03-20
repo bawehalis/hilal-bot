@@ -5,10 +5,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone, date
 
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
-)
-
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from skyfield.api import load, wgs84
 from skyfield.almanac import find_discrete, moon_phases, sunrise_sunset
 
@@ -19,13 +16,9 @@ TOKEN = os.getenv("TOKEN")
 if not TOKEN:
     raise EnvironmentError("TOKEN env var missing")
 
-_ts    = None
-_eph   = None
-_earth = None
-_moon  = None
-_sun   = None
+_ts = _eph = _earth = _moon = _sun = None
 
-def get_skyfield():
+def sf():
     global _ts, _eph, _earth, _moon, _sun
     if _ts is None:
         _ts = load.timescale()
@@ -39,26 +32,18 @@ def get_skyfield():
         _sun   = _eph["sun"]
     return _ts, _eph, _earth, _moon, _sun
 
-_new_moons_cache = None
-_months_cache    = None
-_anchor_cache    = None
+_nm_cache  = None
+_cal_cache = None
 
-def get_new_moons():
-    global _new_moons_cache
-    if _new_moons_cache is not None:
-        return _new_moons_cache
-    ts, eph, earth, moon, sun = get_skyfield()
-    t0 = ts.utc(1993, 1, 1)
-    t1 = ts.utc(2040, 12, 31)
-    times, phases = find_discrete(t0, t1, moon_phases(eph))
-    _new_moons_cache = [
-        t.utc_datetime().replace(tzinfo=timezone.utc)
-        for t, p in zip(times, phases)
-        if p == 0
-    ]
-    return _new_moons_cache
+def new_moons():
+    global _nm_cache
+    if _nm_cache: return _nm_cache
+    ts, eph, *_ = sf()
+    times, phases = find_discrete(ts.utc(1990,1,1), ts.utc(2040,12,31), moon_phases(eph))
+    _nm_cache = [t.utc_datetime().replace(tzinfo=timezone.utc) for t,p in zip(times,phases) if p==0]
+    return _nm_cache
 
-GOZLEM_NOKTALARI = {
+LOCS = {
     "Mekke":    wgs84.latlon(21.4225, 39.8262),
     "Medine":   wgs84.latlon(24.4672, 39.6151),
     "Ankara":   wgs84.latlon(39.9334, 32.8597),
@@ -69,245 +54,127 @@ GOZLEM_NOKTALARI = {
     "Karaci":   wgs84.latlon(24.8607, 67.0011),
 }
 
-def get_sunset_utc(loc, year, month, day):
-    ts, eph, earth, moon, sun = get_skyfield()
+def sunset_utc(loc, y, mo, d):
+    ts, eph, *_ = sf()
     try:
-        t0 = ts.utc(year, month, day, 12)
-        t1 = ts.utc(year, month, day, 23, 59)
-        f  = sunrise_sunset(eph, loc)
-        times, events = find_discrete(t0, t1, f)
-        for t, e in zip(times, events):
-            if e == 0:
-                return t.utc_datetime().hour + t.utc_datetime().minute / 60.0
-        return 18.0
-    except Exception:
-        return 18.0
+        times, events = find_discrete(
+            ts.utc(y,mo,d,12), ts.utc(y,mo,d,23,59), sunrise_sunset(eph,loc)
+        )
+        for t,e in zip(times,events):
+            if e==0: return t.utc_datetime().hour + t.utc_datetime().minute/60.0
+    except: pass
+    return 18.0
 
-def odeh_q(alt_deg, elong_deg):
-    W    = elong_deg
-    ARCV = alt_deg
-    return ARCV - (7.1651 - 6.3226*(W*0.01) + 7.0482*(W*0.01)**2 - 0.3014*(W*0.01)**3)
+def odeh_q(alt, elong):
+    return alt - (7.1651 - 6.3226*(elong*0.01) + 7.0482*(elong*0.01)**2 - 0.3014*(elong*0.01)**3)
 
-def hilal_gorunur_mu(check_date, nm):
-    """
-    check_date aksaminda hilal gorunur mu?
-    nm: o aya ait konjunksiyon zamani
-    Kural: sunset aninda ay yasi >= 13.5 saat olmali
-    En az 1 konumda ODEH q >= 0 ise gorunur
-    """
-    ts, eph, earth, moon, sun = get_skyfield()
-    best_q   = -99.0
-    best_loc = ""
-    gorunur  = False
-    detaylar = {}
+def hilal(d, nm):
+    ts, eph, earth, moon, sun = sf()
+    best_q  = -99.0
+    gorunur = False
 
-    for loc_name, loc in GOZLEM_NOKTALARI.items():
-        sunset_h   = get_sunset_utc(loc, check_date.year, check_date.month, check_date.day)
-        best_q_loc = -99.0
-        best_alt   = -99.0
-        best_elong = 0.0
+    for loc in LOCS.values():
+        sh = sunset_utc(loc, d.year, d.month, d.day)
+        for off in range(15, 70, 5):
+            hf = sh + off/60.0
+            h, mi = int(hf), int((hf % 1)*60)
+            if h >= 24: break
 
-        for offset_min in range(15, 70, 5):
-            hf     = sunset_h + offset_min / 60.0
-            hour   = int(hf)
-            minute = int((hf - hour) * 60)
-            if hour >= 24:
-                break
-
-            t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
+            t     = ts.utc(d.year, d.month, d.day, h, mi)
             obs   = (earth + loc).at(t)
             m_app = obs.observe(moon).apparent()
             s_app = obs.observe(sun).apparent()
-            alt_m, _, _ = m_app.altaz()
-            elong        = m_app.separation_from(s_app).degrees
-            alt_deg      = alt_m.degrees
+            alt_deg = m_app.altaz()[0].degrees
+            elong   = m_app.separation_from(s_app).degrees
 
-            if alt_deg <= 0:
-                continue
+            if alt_deg <= 0: continue
 
-            sunset_dt = datetime(
-                check_date.year, check_date.month, check_date.day,
-                int(sunset_h), int((sunset_h % 1) * 60),
-                tzinfo=timezone.utc
-            )
-            age_saat = (sunset_dt - nm).total_seconds() / 3600.0
-            if age_saat < 13.5:
-                continue
+            sunset_dt = datetime(d.year, d.month, d.day,
+                                 int(sh), int((sh%1)*60), tzinfo=timezone.utc)
+
+            # Konjunksiyondan sonra sunset aninda ay en az 13.5 saat olmali
+            # 2023 ve 2013 gibi gec konjunksiyon durumlarini yakalar
+            if (sunset_dt - nm).total_seconds()/3600 < 13.5: continue
 
             q = odeh_q(alt_deg, elong)
-            if q > best_q_loc:
-                best_q_loc = q
-                best_alt   = alt_deg
-                best_elong = elong
+            if q > best_q: best_q = q
+            if q >= 0.0: gorunur = True
 
-        detaylar[loc_name] = {"alt": best_alt, "elong": best_elong, "q": best_q_loc}
+    return gorunur, best_q
 
-        if best_q_loc > best_q:
-            best_q   = best_q_loc
-            best_loc = loc_name
-
-        if best_q_loc >= 0.0:
-            gorunur = True
-
-    return gorunur, best_q, best_loc, detaylar
-
-def build_calendar():
-    """
-    Dogru Hicri takvim insa algoritmasi:
-
-    Her ay icin:
-    1. Mevcut ayin 29. gunu aksami hilal ara
-       (29. gun = ay_basi + 28 gun, cunku gun 1 = ay_basi)
-    2. Gorunduyse: yeni ay = 29. gun + 1 (ay 29 gun oldu)
-    3. Gorünmediyse: yeni ay = 29. gun + 2 (ay 30 gun oldu)
-
-    Hangi konjunksiyon bu aya ait?
-    Her ay baslangicinin icinde bulundugu konjunksiyon.
-    """
-    new_moons = get_new_moons()
-
-    def get_nm_for_date(d):
-        best = None
-        for nm in new_moons:
-            if nm.date() <= d:
-                best = nm
-        return best
-
-    # Bootstrap: ilk ay baslangicini bul
-    # 1993 basini konjunksiyondan hesapla
-    first_nm = new_moons[0]
-    d1 = first_nm.date() + timedelta(days=1)
-    gorunur, _, _, _ = hilal_gorunur_mu(d1, first_nm)
-    if gorunur:
-        first_start = d1
-    else:
-        first_start = d1 + timedelta(days=1)
-
-    months = [first_start]
-
-    # Her bir sonraki ay: onceki ayin 29. gunu aksamini kontrol et
-    for _ in range(550):  # ~46 yil
-        prev_start = months[-1]
-        gun29      = prev_start + timedelta(days=28)  # gun1=prev_start, gun29=+28
-
-        # Bu gece hangi konjunksiyona gore degerlendiriyoruz?
-        # gun29, artik yeni aya ait konjunksiyonun oncesindedir
-        # O geceye ait yeni ayi bul: gun29'dan sonraki ilk konjunksiyon
-        nm_for_29 = None
-        for nm in new_moons:
-            if nm.date() >= gun29 - timedelta(days=3):
-                nm_for_29 = nm
-                break
-
-        if nm_for_29 is None:
+def nm_bul(d):
+    """d tarihinden once veya o gune en yakin (sonraki) konjunksiyonu bul."""
+    nms = new_moons()
+    best = None
+    for nm in nms:
+        if nm.date() >= d - timedelta(days=3):
+            best = nm
             break
+    return best
 
-        gorunur, _, _, _ = hilal_gorunur_mu(gun29, nm_for_29)
-
-        if gorunur:
-            next_start = gun29 + timedelta(days=1)  # ay 29 gun
-        else:
-            next_start = gun29 + timedelta(days=2)  # ay 30 gun
-
-        months.append(next_start)
-
-        # 2040 sonrasina gerek yok
-        if next_start.year > 2040:
-            break
-
-    return sorted(months)
-
-def get_months():
-    global _months_cache
-    if _months_cache is not None:
-        return _months_cache
+def build_cal():
+    global _cal_cache
+    if _cal_cache: return _cal_cache
     logger.info("Takvim insa ediliyor...")
-    _months_cache = build_calendar()
-    logger.info("Takvim hazir: %d ay.", len(_months_cache))
-    return _months_cache
+    nms = new_moons()
 
-def get_anchor():
-    global _anchor_cache
-    if _anchor_cache is not None:
-        return _anchor_cache
-    months = get_months()
-    anchor_target = datetime(2025, 3, 1).date()
-    anchor_index  = min(range(len(months)), key=lambda i: abs((months[i] - anchor_target).days))
-    muharrem_1446 = anchor_index - 8
-    _anchor_cache = (anchor_index, muharrem_1446)
-    return _anchor_cache
+    # Bootstrap
+    nm0 = nms[0]
+    d1  = nm0.date() + timedelta(days=1)
+    g, _ = hilal(d1, nm0)
+    months = [d1 if g else d1 + timedelta(days=1)]
 
-AYLAR = [
-    "Muharrem", "Safer", "Rebiulevvel", "Rebiulahir",
-    "Cemaziyelevvel", "Cemaziyelahir", "Recep",
-    "Saban", "Ramazan", "Sevval", "Zilkade", "Zilhicce"
-]
+    for _ in range(620):
+        prev  = months[-1]
+        gun29 = prev + timedelta(days=28)
+        nm    = nm_bul(gun29)
+        if nm is None: break
+        g, _ = hilal(gun29, nm)
+        months.append(gun29 + timedelta(days=1 if g else 2))
+        if months[-1].year > 2040: break
+
+    _cal_cache = months
+    logger.info("Takvim hazir: %d ay", len(_cal_cache))
+    return _cal_cache
 
 AYLAR_TR = [
-    "Muharrem", "Safer", "Rebi\u00fclevvel", "Rebi\u00fclahir",
-    "Cemaziyelevvel", "Cemaziyelahir", "Recep",
-    "\u015eaban", "Ramazan", "\u015eevval", "Zilkade", "Zilhicce"
+    "Muharrem","Safer","Rebi\u00fclevvel","Rebi\u00fclahir",
+    "Cemaziyelevvel","Cemaziyelahir","Recep",
+    "\u015eaban","Ramazan","\u015eevval","Zilkade","Zilhicce"
 ]
 
-OZEL = {
-    (0,10):  "Asure Gunu",
-    (1,12):  "Mevlid Kandili",
-    (6,27):  "Mirac Kandili",
-    (7,15):  "Berat Kandili",
-    (8, 1):  "Ramazan Baslangici",
-    (8,27):  "Kadir Gecesi",
-    (9, 1):  "Ramazan Bayrami 1. Gunu",
-    (9, 2):  "Ramazan Bayrami 2. Gunu",
-    (9, 3):  "Ramazan Bayrami 3. Gunu",
-    (11, 9): "Arefe Gunu",
-    (11,10): "Kurban Bayrami 1. Gunu",
-    (11,11): "Kurban Bayrami 2. Gunu",
-    (11,12): "Kurban Bayrami 3. Gunu",
-    (11,13): "Kurban Bayrami 4. Gunu",
-}
+def anchor():
+    cal = build_cal()
+    target = date(2025, 3, 1)
+    idx = min(range(len(cal)), key=lambda i: abs((cal[i]-target).days))
+    return idx, idx - 8
 
-def get_hijri(check_date):
-    months = get_months()
-    anchor_index, muharrem_1446 = get_anchor()
-    current = None
-    for i, m in enumerate(months):
-        if m <= check_date:
-            current = (m, i)
-    if not current:
-        return 0, "?", -1, 0
-    start, idx = current
-    gun       = (check_date - start).days + 1
-    delta     = idx - muharrem_1446
-    ay_index  = delta % 12
-    hicri_yil = 1446 + delta // 12
-    return gun, AYLAR_TR[ay_index], ay_index, hicri_yil
+def hicri(d):
+    cal = build_cal()
+    ai, m1446 = anchor()
+    cur = None
+    for i, m in enumerate(cal):
+        if m <= d: cur = (m, i)
+    if not cur: return 0, "?", -1, 0
+    start, idx = cur
+    gun   = (d - start).days + 1
+    delta = idx - m1446
+    return gun, AYLAR_TR[delta%12], delta%12, 1446 + delta//12
 
-def date_from_hijri(hicri_yil, ay_index, gun):
-    months = get_months()
-    anchor_index, muharrem_1446 = get_anchor()
-    delta      = (hicri_yil - 1446) * 12 + ay_index
-    target_idx = muharrem_1446 + delta
-    if target_idx < 0 or target_idx >= len(months):
-        return None
-    return months[target_idx] + timedelta(days=gun - 1)
+def ramazan_basi(yil):
+    cal = build_cal()
+    ai, m1446 = anchor()
+    for i, m in enumerate(cal):
+        delta = i - m1446
+        if delta%12 == 8 and m.year == yil:
+            return m
+    for i, m in enumerate(cal):
+        delta = i - m1446
+        if delta%12 == 8 and abs(m.year - yil) == 1:
+            return m
+    return None
 
-def find_month_date(year_miladi, ay_index):
-    months = get_months()
-    anchor_index, muharrem_1446 = get_anchor()
-    candidates = []
-    for i, m in enumerate(months):
-        delta = i - muharrem_1446
-        if delta % 12 == ay_index % 12:
-            candidates.append((m, i))
-    for m, i in candidates:
-        if m.year == year_miladi:
-            return m, i
-    for m, i in candidates:
-        if abs(m.year - year_miladi) == 1:
-            return m, i
-    return None, None
-
-RAMAZAN_TURKIYE = {
+TR = {
     1995:date(1995,2,1),  1996:date(1996,1,22), 1997:date(1997,1,11),
     1998:date(1998,12,20),1999:date(1999,12,9), 2000:date(2000,11,27),
     2001:date(2001,11,16),2002:date(2002,11,6), 2003:date(2003,10,27),
@@ -320,8 +187,7 @@ RAMAZAN_TURKIYE = {
     2022:date(2022,4,2),  2023:date(2023,3,23), 2024:date(2024,3,11),
     2025:date(2025,3,1),
 }
-
-RAMAZAN_SUUDI = {
+SA = {
     1995:date(1995,2,1),  1996:date(1996,1,21), 1997:date(1997,1,10),
     1998:date(1998,12,20),1999:date(1999,12,9), 2000:date(2000,11,27),
     2001:date(2001,11,16),2002:date(2002,11,6), 2003:date(2003,10,26),
@@ -334,8 +200,7 @@ RAMAZAN_SUUDI = {
     2022:date(2022,4,2),  2023:date(2023,3,23), 2024:date(2024,3,11),
     2025:date(2025,3,1),
 }
-
-RAMAZAN_IRAN = {
+IR = {
     1995:date(1995,2,1),  1996:date(1996,1,22), 1997:date(1997,1,11),
     1998:date(1998,12,21),1999:date(1999,12,10),2000:date(2000,11,28),
     2001:date(2001,11,17),2002:date(2002,11,7), 2003:date(2003,10,27),
@@ -349,382 +214,155 @@ RAMAZAN_IRAN = {
     2025:date(2025,3,1),
 }
 
-def parse_year(args, min_y=1995, max_y=2040):
-    if not args:
-        raise ValueError("Lutfen bir yil girin.")
-    try:
-        y = int(args[0])
-    except ValueError:
-        raise ValueError(str(args[0]) + " gecerli degil.")
-    if not (min_y <= y <= max_y):
-        raise ValueError("Yil " + str(min_y) + "-" + str(max_y) + " arasinda olmali.")
-    return y
-
-def parse_date_arg(args):
-    if not args:
-        raise ValueError("Ornek: /miladiden 2026-03-20")
-    try:
-        return datetime.strptime(args[0], "%Y-%m-%d").date()
-    except ValueError:
-        raise ValueError("Tarih formati YYYY-AA-GG olmali.")
-
-async def reply_error(update, msg):
-    await update.message.reply_text("Hata: " + msg)
-
-def fark_str(bot, ref):
-    if ref is None:
-        return "?"
+def fark(bot, ref):
+    if ref is None: return "?"
     d = (bot - ref).days
     return ("+" if d >= 0 else "") + str(d)
 
-def cache_hazir():
-    return _months_cache is not None
-
-HAZIR_DEGIL_MSG = "Takvim hazırlaniyor, lutfen 1-2 dakika bekleyip tekrar deneyin."
-
-HELP_TEXT = (
-    "HICRI TAKVIM BOTU\n\n"
-    "/bugun                          Bugunun Hicri tarihi\n"
-    "/yil 2027                       Yil bazli takvim\n"
-    "/ramazan 2027                   Ramazan baslangici\n"
-    "/arefe 2027                     Kurban Bayrami\n"
-    "/bayramlar 2027                 Tum dini gunler\n"
-    "/kacgun                         Ramazana kac gun kaldi\n"
-    "/hilal                          Bugun hilal durumu\n"
-    "/miladiden 2026-03-20           Miladi > Hicri\n"
-    "/hicridenmiladi 15 Ramazan 1446 Hicri > Miladi\n"
-    "/analiz                         3 ulke karsilastirma\n"
-    "/karsilastir 2025               Yil bazli karsilastirma\n"
-    "/ayuzunluklari 2025             Ay gun sayilari\n"
-    "/yardim                         Bu menu\n"
-)
+def uzlasma(bot, tr, sa, ir):
+    refs = [x for x in [tr, sa, ir] if x is not None]
+    ayni = sum(1 for r in refs if r == bot)
+    return ayni, len(refs)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT)
-
-async def yardim(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT)
+    await update.message.reply_text(
+        "HICRI TAKVIM BOTU\n\n"
+        "/bugun\n"
+        "/analiz\n"
+        "/karsilastir 2025\n"
+    )
 
 async def bugun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
+    if not _cal_cache:
+        return await update.message.reply_text("Takvim hazirlanıyor, bekleyin...")
     today = datetime.now(timezone.utc).date()
-    gun, ay_adi, ay_idx, hicri_yil = get_hijri(today)
-    ozel = OZEL.get((ay_idx, gun), "")
-    text = "Bugun: " + str(today) + "\nHicri: " + str(gun) + " " + ay_adi + " " + str(hicri_yil)
-    if ozel:
-        text += "\n>>> " + ozel
-    await update.message.reply_text(text)
-
-async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        year = parse_year(context.args)
-    except ValueError as e:
-        return await reply_error(update, str(e))
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    months = get_months()
-    anchor_index, muharrem_1446 = get_anchor()
-    lines = [str(year) + " Yili Hicri Ay Baslari\n"]
-    found = False
-    for i, m in enumerate(months):
-        if m.year == year:
-            delta      = i - muharrem_1446
-            idx        = delta % 12
-            hyil       = 1446 + delta // 12
-            gun_sayisi = (months[i+1] - m).days if i+1 < len(months) else "?"
-            lines.append(AYLAR_TR[idx] + " " + str(hyil) + ": " + str(m) + " (" + str(gun_sayisi) + " gun)")
-            found = True
-    if not found:
-        lines.append("Bu yil icin veri bulunamadi.")
-    await update.message.reply_text("\n".join(lines))
-
-async def ramazan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        year = parse_year(context.args)
-    except ValueError as e:
-        return await reply_error(update, str(e))
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    m, _ = find_month_date(year, 8)
-    if m:
-        text = ("Ramazan " + str(year) + "\n"
-                "Baslangic  : " + str(m) + "\n"
-                "Bitis (29) : " + str(m + timedelta(days=28)) + "\n"
-                "Kadir (~27): " + str(m + timedelta(days=26)))
-    else:
-        text = str(year) + " icin veri bulunamadi."
-    await update.message.reply_text(text)
-
-async def arefe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        year = parse_year(context.args)
-    except ValueError as e:
-        return await reply_error(update, str(e))
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    m, _ = find_month_date(year, 11)
-    if m:
-        text = ("Kurban Bayrami " + str(year) + "\n"
-                "Zilhicce 1 : " + str(m) + "\n"
-                "Arefe      : " + str(m + timedelta(days=8)) + "\n"
-                "Bayram 1   : " + str(m + timedelta(days=9)) + "\n"
-                "Bayram 2   : " + str(m + timedelta(days=10)) + "\n"
-                "Bayram 3   : " + str(m + timedelta(days=11)) + "\n"
-                "Bayram 4   : " + str(m + timedelta(days=12)))
-    else:
-        text = str(year) + " icin veri bulunamadi."
-    await update.message.reply_text(text)
-
-async def bayramlar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        year = parse_year(context.args)
-    except ValueError as e:
-        return await reply_error(update, str(e))
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    LISTE = [
-        (0,10,"Asure"),(1,12,"Mevlid"),(6,27,"Mirac"),(7,15,"Berat"),
-        (8,1,"Ramazan Baslangici"),(8,27,"Kadir (~)"),(9,1,"Ramazan Bayrami 1"),
-        (9,2,"Ramazan Bayrami 2"),(9,3,"Ramazan Bayrami 3"),(11,9,"Arefe"),
-        (11,10,"Kurban 1"),(11,11,"Kurban 2"),(11,12,"Kurban 3"),(11,13,"Kurban 4"),
-    ]
-    lines = [str(year) + " Dini Gunler\n"]
-    found = False
-    for ay_idx, gun, isim in LISTE:
-        m, _ = find_month_date(year, ay_idx)
-        if m:
-            hedef = m + timedelta(days=gun - 1)
-            if abs(hedef.year - year) <= 1:
-                lines.append(str(hedef) + "  " + isim)
-                found = True
-    if not found:
-        lines.append("Bu yil icin veri bulunamadi.")
-    await update.message.reply_text("\n".join(lines))
-
-async def kacgun(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    today = datetime.now(timezone.utc).date()
-    if context.args:
-        try:
-            year = parse_year(context.args)
-        except ValueError as e:
-            return await reply_error(update, str(e))
-        years_to_check = [year]
-    else:
-        years_to_check = [today.year, today.year + 1]
-    for y in years_to_check:
-        m, _ = find_month_date(y, 8)
-        if m and m >= today:
-            fark = (m - today).days
-            if fark == 0:
-                text = "Bugun Ramazan basliyor!"
-            elif fark == 1:
-                text = "Yarin Ramazan basliyor!\nBaslangic: " + str(m)
-            else:
-                text = "Ramazana " + str(fark) + " gun kaldi.\nBaslangic: " + str(m)
-            return await update.message.reply_text(text)
-    await reply_error(update, "Hesaplanamadi.")
-
-async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if _new_moons_cache is None:
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    today = datetime.now(timezone.utc).date()
-    nm = None
-    for t in reversed(_new_moons_cache):
-        if t.date() <= today:
-            nm = t
-            break
-    if not nm:
-        return await reply_error(update, "Yeni ay verisi bulunamadi.")
-    age_hours = (today - nm.date()).days * 24
-    await update.message.reply_text("Hilal hesaplaniyor...")
-    loop = asyncio.get_event_loop()
-    gorunur, best_q, best_loc, detaylar = await loop.run_in_executor(
-        None, hilal_gorunur_mu, today, nm
+    gun, ay, ay_idx, hyil = hicri(today)
+    await update.message.reply_text(
+        "Bugun: " + str(today) + "\nHicri: " + str(gun) + " " + ay + " " + str(hyil)
     )
-    if best_q >= 0.0:
-        durum = "Acik gozle gorunur"
-    elif best_q >= -0.96:
-        durum = "Optik aracla gorunebilir"
-    else:
-        durum = "Gorunmez"
-    lines = ["Hilal Durumu - " + str(today) + "\n",
-             "Yeni Ay : " + str(nm.date()),
-             "Ay Yasi : " + str(int(age_hours)) + " saat",
-             "En iyi  : " + best_loc,
-             "ODEH-q  : " + str(round(best_q, 3)),
-             "Durum   : " + durum,
-             "\nKonum Detaylari:"]
-    for loc_name, p in detaylar.items():
-        if p["alt"] > 0:
-            lines.append(loc_name + ": alt=" + str(round(p["alt"],1)) +
-                         " elong=" + str(round(p["elong"],1)) +
-                         " q=" + str(round(p["q"],3)))
-    await update.message.reply_text("\n".join(lines))
-
-async def miladiden(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        tarih = parse_date_arg(context.args)
-    except ValueError as e:
-        return await reply_error(update, str(e))
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    gun, ay_adi, ay_idx, hicri_yil = get_hijri(tarih)
-    if gun == 0:
-        return await reply_error(update, "Hesaplanamadi.")
-    ozel = OZEL.get((ay_idx, gun), "")
-    text = ("Miladi > Hicri\n\nMiladi : " + str(tarih) + "\nHicri  : "
-            + str(gun) + " " + ay_adi + " " + str(hicri_yil))
-    if ozel:
-        text += "\n>>> " + ozel
-    await update.message.reply_text(text)
-
-async def hicridenmiladi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 3:
-        return await reply_error(update,
-            "Kullanim: /hicridenmiladi <gun> <AyAdi> <HicriYil>\nOrnek: /hicridenmiladi 15 Ramazan 1446")
-    try:
-        gun       = int(context.args[0])
-        ay_adi    = context.args[1].strip()
-        hicri_yil = int(context.args[2])
-    except ValueError:
-        return await reply_error(update, "Gun ve yil sayi olmali.")
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    ay_idx = None
-    for i in range(len(AYLAR)):
-        if AYLAR[i].lower() == ay_adi.lower() or AYLAR_TR[i].lower() == ay_adi.lower():
-            ay_idx = i
-            break
-    if ay_idx is None:
-        return await reply_error(update, ay_adi + " gecerli bir ay adi degil.")
-    if not (1 <= gun <= 30):
-        return await reply_error(update, "Gun 1-30 arasinda olmali.")
-    miladi = date_from_hijri(hicri_yil, ay_idx, gun)
-    if not miladi:
-        return await reply_error(update, "Bu tarih hesap araliginin disinda.")
-    ozel = OZEL.get((ay_idx, gun), "")
-    text = ("Hicri > Miladi\n\nHicri  : " + str(gun) + " " + AYLAR_TR[ay_idx] + " " + str(hicri_yil)
-            + "\nMiladi : " + str(miladi))
-    if ozel:
-        text += "\n>>> " + ozel
-    await update.message.reply_text(text)
 
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    await update.message.reply_text("Analiz hesaplaniyor, lutfen bekleyin...")
-    lines = ["RAMAZAN ANALIZI 1995-2025\n"
-             "Bot | TR | SA | IR | [TR|SA|IR]\n"
-             + "-"*60]
-    tr_ok = sa_ok = ir_ok = 0
-    total = 0
-    for year in sorted(RAMAZAN_TURKIYE.keys()):
-        bot_m, _ = find_month_date(year, 8)
-        if not bot_m:
-            continue
-        tr = RAMAZAN_TURKIYE.get(year)
-        sa = RAMAZAN_SUUDI.get(year)
-        ir = RAMAZAN_IRAN.get(year)
-        tr_d = fark_str(bot_m, tr)
-        sa_d = fark_str(bot_m, sa)
-        ir_d = fark_str(bot_m, ir)
-        if tr and (bot_m - tr).days == 0: tr_ok += 1
-        if sa and (bot_m - sa).days == 0: sa_ok += 1
-        if ir and (bot_m - ir).days == 0: ir_ok += 1
+    if not _cal_cache:
+        return await update.message.reply_text("Takvim hazirlanıyor, bekleyin...")
+    await update.message.reply_text("Analiz yapiliyor...")
+
+    lines = [
+        "RAMAZAN ANALIZI 1995-2025\n",
+        "Yil  Bot         TR          SA          IR          [TR|SA|IR]  Durum",
+        "-"*75
+    ]
+
+    bot_dogru  = 0
+    bot_sapma  = 0
+    ir_sapma   = 0
+    sa_sapma   = 0
+    tr_sapma   = 0
+    total      = 0
+
+    for yil in sorted(TR.keys()):
+        bot = ramazan_basi(yil)
+        if not bot: continue
+        tr = TR.get(yil)
+        sa = SA.get(yil)
+        ir = IR.get(yil)
+
+        tr_d = fark(bot, tr)
+        sa_d = fark(bot, sa)
+        ir_d = fark(bot, ir)
+
+        ayni, toplam = uzlasma(bot, tr, sa, ir)
+
+        if ayni == toplam:
+            durum = "OK"
+            bot_dogru += 1
+        elif ayni >= 2:
+            durum = "OK"
+            bot_dogru += 1
+            if tr and tr != bot: tr_sapma += 1
+            if sa and sa != bot: sa_sapma += 1
+            if ir and ir != bot: ir_sapma += 1
+        elif ayni == 1:
+            durum = "KONTROL"
+            bot_sapma += 1
+        else:
+            durum = "BOT-SAPTI"
+            bot_sapma += 1
+
         total += 1
-        lines.append(str(year) + " Bot:" + str(bot_m) +
-                     " TR:" + str(tr) +
-                     " SA:" + str(sa) +
-                     " IR:" + str(ir) +
-                     " [" + tr_d + "|" + sa_d + "|" + ir_d + "]")
-    lines.append("\nOzet (tam isabet):")
-    lines.append("Turkiye : %" + str(round(tr_ok/total*100, 1)))
-    lines.append("Suudi   : %" + str(round(sa_ok/total*100, 1)))
-    lines.append("Iran    : %" + str(round(ir_ok/total*100, 1)))
-    lines.append("Test    : " + str(total) + " yil")
+        lines.append(
+            str(yil) + "  " + str(bot) + "  " + str(tr) + "  " +
+            str(sa)  + "  " + str(ir)  + "  " +
+            "[" + tr_d + "|" + sa_d + "|" + ir_d + "]  " + durum
+        )
+
+    lines.append("\nOzet:")
+    lines.append("Bot dogru (cogunlukla)  : " + str(bot_dogru) + "/" + str(total) +
+                 " (%" + str(round(bot_dogru/total*100,1)) + ")")
+    lines.append("Bot sapma (kontrol et) : " + str(bot_sapma) + "/" + str(total))
+    lines.append("TR sapma sayisi        : " + str(tr_sapma))
+    lines.append("SA sapma sayisi        : " + str(sa_sapma))
+    lines.append("IR sapma sayisi        : " + str(ir_sapma))
+
     msg = "\n".join(lines)
     for chunk in [msg[i:i+4000] for i in range(0, len(msg), 4000)]:
         await update.message.reply_text(chunk)
 
 async def karsilastir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _cal_cache:
+        return await update.message.reply_text("Takvim hazirlanıyor, bekleyin...")
     try:
-        year = parse_year(context.args)
-    except ValueError as e:
-        return await reply_error(update, str(e))
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    bot_m, _ = find_month_date(year, 8)
-    tr = RAMAZAN_TURKIYE.get(year)
-    sa = RAMAZAN_SUUDI.get(year)
-    ir = RAMAZAN_IRAN.get(year)
-    lines = [str(year) + " Ramazan Karsilastirmasi\n",
-             "Astronomik Bot : " + str(bot_m),
-             "Turkiye (TR)   : " + str(tr) + "  fark: " + fark_str(bot_m, tr),
-             "Suudi Arabistan: " + str(sa) + "  fark: " + fark_str(bot_m, sa),
-             "Iran           : " + str(ir) + "  fark: " + fark_str(bot_m, ir)]
-    await update.message.reply_text("\n".join(lines))
+        yil = int(context.args[0]) if context.args else datetime.now().year
+    except ValueError:
+        return await update.message.reply_text("Ornek: /karsilastir 2025")
 
-async def ayuzunluklari(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        year = parse_year(context.args)
-    except ValueError as e:
-        return await reply_error(update, str(e))
-    if not cache_hazir():
-        return await update.message.reply_text(HAZIR_DEGIL_MSG)
-    months = get_months()
-    anchor_index, muharrem_1446 = get_anchor()
-    lines = [str(year) + " Ay Uzunluklari\n"]
-    found = False
-    for i, m in enumerate(months):
-        if m.year == year and i+1 < len(months):
-            delta      = i - muharrem_1446
-            idx        = delta % 12
-            hyil       = 1446 + delta // 12
-            gun_sayisi = (months[i+1] - m).days
-            flag       = "" if gun_sayisi in (29, 30) else " <<ANORMAL!"
-            lines.append(AYLAR_TR[idx] + " " + str(hyil) + ": " + str(m) +
-                         " -> " + str(gun_sayisi) + " gun" + flag)
-            found = True
-    if not found:
-        lines.append("Bu yil icin veri bulunamadi.")
-    await update.message.reply_text("\n".join(lines))
+    bot = ramazan_basi(yil)
+    tr  = TR.get(yil)
+    sa  = SA.get(yil)
+    ir  = IR.get(yil)
 
-async def warm_up_cache(app):
-    logger.info("Takvim arka planda hazirlanıyor...")
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, get_months)
-    logger.info("Takvim hazir, bot tam kapasitede.")
+    ayni, toplam = uzlasma(bot, tr, sa, ir)
+
+    lines = [
+        str(yil) + " Ramazan Karsilastirmasi\n",
+        "Astronomik Bot : " + str(bot),
+        "Turkiye   (TR) : " + str(tr) + "  " + fark(bot, tr),
+        "Suudi     (SA) : " + str(sa) + "  " + fark(bot, sa),
+        "Iran      (IR) : " + str(ir) + "  " + fark(bot, ir),
+        "\nUzlasma: " + str(ayni) + "/" + str(toplam) + " ulke bot ile ayni",
+    ]
+
+    if ayni == toplam:
+        lines.append("Sonuc: Tum kaynaklar ayni gunu gosteriyor.")
+    elif ayni >= 2:
+        farklilar = []
+        if tr and tr != bot: farklilar.append("TR")
+        if sa and sa != bot: farklilar.append("SA")
+        if ir and ir != bot: farklilar.append("IR")
+        lines.append("Sonuc: " + ", ".join(farklilar) + " farkli — muhtemelen o kaynak sapti.")
+    else:
+        lines.append("Sonuc: Net uzlasma yok, bot degerini kontrol et.")
+
+    await update.message.reply_text("\n".join(lines))
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Hata: %s", context.error, exc_info=True)
     if isinstance(update, Update) and update.message:
-        await update.message.reply_text("Beklenmeyen hata. /yardim yazin.")
+        await update.message.reply_text("Hata olustu.")
 
-async def bilinmeyen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bilinmeyen komut. /yardim yazin.")
+async def warm_up(app):
+    logger.info("Takvim arka planda hazirlaniyor...")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, build_cal)
+    logger.info("Takvim hazir.")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start",          start))
-    app.add_handler(CommandHandler("yardim",         yardim))
-    app.add_handler(CommandHandler("bugun",          bugun))
-    app.add_handler(CommandHandler("yil",            yil))
-    app.add_handler(CommandHandler("ramazan",        ramazan))
-    app.add_handler(CommandHandler("arefe",          arefe))
-    app.add_handler(CommandHandler("bayramlar",      bayramlar))
-    app.add_handler(CommandHandler("kacgun",         kacgun))
-    app.add_handler(CommandHandler("hilal",          hilal))
-    app.add_handler(CommandHandler("miladiden",      miladiden))
-    app.add_handler(CommandHandler("hicridenmiladi", hicridenmiladi))
-    app.add_handler(CommandHandler("analiz",         analiz))
-    app.add_handler(CommandHandler("karsilastir",    karsilastir))
-    app.add_handler(CommandHandler("ayuzunluklari",  ayuzunluklari))
-    app.add_handler(MessageHandler(filters.COMMAND,  bilinmeyen))
+    app.add_handler(CommandHandler("start",       start))
+    app.add_handler(CommandHandler("bugun",       bugun))
+    app.add_handler(CommandHandler("analiz",      analiz))
+    app.add_handler(CommandHandler("karsilastir", karsilastir))
     app.add_error_handler(error_handler)
-    app.post_init = warm_up_cache
+    app.post_init = warm_up
     logger.info("Bot baslatildi.")
     app.run_polling()
 
