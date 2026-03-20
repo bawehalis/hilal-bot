@@ -36,7 +36,7 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# 🔥 DOĞRU HİLAL MODELİ (FINAL)
+# 🔥 HİLAL MODELİ (SON DENGE)
 # =========================
 def visible(date, nm):
 
@@ -54,14 +54,14 @@ def visible(date, nm):
 
     alt = alt.degrees
 
-    # 🔥 GERÇEK GÖZLEM MANTIĞI
-    if alt >= 3 and elong >= 5:
+    # 🔥 SON DENGE MODELİ
+    if alt >= 4 and elong >= 5:
         return True
 
-    if alt >= 5 and elong >= 4:
+    if alt >= 6 and elong >= 4:
         return True
 
-    if age >= 10 and elong >= 4:
+    if age >= 12 and elong >= 4:
         return True
 
     return False
@@ -97,7 +97,7 @@ AYLAR = [
     "Şaban","Ramazan","Şevval","Zilkade","Zilhicce"
 ]
 
-# 🔥 STABLE ANCHOR
+# 🔥 STABLE ANCHOR (DOĞRU NOKTA)
 ANCHOR_DATE = datetime(2025,3,1).date()
 
 ANCHOR_INDEX = min(range(len(MONTHS)),
@@ -269,5 +269,5 @@ app.add_handler(CommandHandler("yil", yil))
 app.add_handler(CommandHandler("test", test))
 app.add_handler(CommandHandler("hilal_3gun", hilal_3gun))
 
-print("🚀 FINAL HİLAL MOTOR AKTİF")
+print("🚀 FINAL BALANCED MOTOR AKTİF")
 app.run_polling()
