@@ -162,8 +162,6 @@ def find_month_date(year_miladi, ay_index):
     candidates = []
     for i, m in enumerate(MONTHS):
         delta = i - MUHARREM_1446
-        if delta < -24 or delta > 600:
-            continue
         if delta % 12 == ay_index % 12:
             candidates.append((m, i))
 
@@ -226,6 +224,7 @@ HELP_TEXT = (
     "/hicridenmiladi 15 Ramazan 1446 Hicri > Miladi\n"
     "/analiz                         Dogruluk analizi\n"
     "/karsilastir 2026               Karsilastirma\n"
+    "/debug                          Sistem bilgisi\n"
     "/yardim                         Bu menu\n"
 )
 
@@ -254,8 +253,6 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, m in enumerate(MONTHS):
         if m.year == year:
             delta = i - MUHARREM_1446
-            if delta < 0:
-                continue
             idx  = delta % 12
             hyil = 1446 + delta // 12
             lines.append(AYLAR_TR[idx] + " " + str(hyil) + ": " + str(m))
