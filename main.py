@@ -29,13 +29,12 @@ earth = eph["earth"]
 moon  = eph["moon"]
 sun   = eph["sun"]
 
-# Diyanet merkezi Ankara agirlikli, Mekke ve Istanbul dahil
 LOCATIONS = {
-    "Ankara":   (wgs84.latlon(39.9334, 32.8597), 3.0),   # Diyanet merkezi - en yuksek agirlik
-    "Istanbul": (wgs84.latlon(41.0082, 28.9784), 2.5),   # Turkiye ikinci sehir
-    "Mekke":    (wgs84.latlon(21.4225, 39.8262), 2.0),   # Hac merkezi
-    "Kahire":   (wgs84.latlon(30.0444, 31.2357), 1.5),   # Misir
-    "Tahran":   (wgs84.latlon(35.6892, 51.3890), 1.0),   # Iran
+    "Ankara":   (wgs84.latlon(39.9334, 32.8597), 3.0),
+    "Istanbul": (wgs84.latlon(41.0082, 28.9784), 2.5),
+    "Mekke":    (wgs84.latlon(21.4225, 39.8262), 2.0),
+    "Kahire":   (wgs84.latlon(30.0444, 31.2357), 1.5),
+    "Tahran":   (wgs84.latlon(35.6892, 51.3890), 1.0),
 }
 
 def get_new_moons(start=1993, end=2037):
@@ -63,79 +62,27 @@ def get_sunset(loc, year, month, day):
     except Exception:
         return 18.0
 
-def get_moon_params(loc, check_date, nm, minutes_after_sunset=40):
-    """Sunset sonrasi belirli dakikada ay parametrelerini dondur."""
-    sunset_hour = get_sunset(loc, check_date.year, check_date.month, check_date.day)
-    hour_frac   = sunset_hour + minutes_after_sunset / 60.0
-    hour        = int(hour_frac)
-    minute      = int((hour_frac - hour) * 60)
-    if hour >= 24:
-        return None
-
-    t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
-    obs   = (earth + loc).at(t)
-    m_app = obs.observe(moon).apparent()
-    s_app = obs.observe(sun).apparent()
-    alt_m, _, _ = m_app.altaz()
-    elong        = m_app.separation_from(s_app).degrees
-    alt_deg      = alt_m.degrees
-
-    age_hours = (
-        datetime.combine(check_date, datetime.min.time(), tzinfo=timezone.utc) - nm
-    ).total_seconds() / 3600.0
-
-    return {
-        "alt":   alt_deg,
-        "elong": elong,
-        "age":   age_hours,
-        "illum": ((1 - math.cos(math.radians(elong))) / 2) * 100,
-    }
-
-def iich_criterion(alt, elong):
-    """
-    IICH Istanbul 2016 kriteri:
-    Ay irtifasi > 5 derece VE elongasyon > 8 derece
-    """
-    return alt > 5.0 and elong > 8.0
-
-def mabims_criterion(alt, elong, age):
-    """
-    MABIMS 2021 kriteri (Brunei, Endonezya, Malezya, Singapur):
-    irtifa >= 3 derece VE elongasyon >= 6.4 derece
-    """
-    return alt >= 3.0 and elong >= 6.4
-
 def yallop_q(alt, elong):
-    """
-    Yallop 1997 q degeri.
-    q >= +0.216 : kolay gorunur
-    q >= -0.014 : gorunur
-    q >= -0.160 : zor gorunur
-    q >= -0.232 : optik aracla gorunur
-    q >= -0.293 : optik aracla zor gorunur
-    q <  -0.293 : gorunmez
-    """
     W    = elong
     ARCV = alt
-    q    = (ARCV - (11.8371 - 6.3226 * (W * 0.01) + 7.0482 * (W * 0.01) ** 2 - 0.3014 * (W * 0.01) ** 3))
+    q = (ARCV - (11.8371 - 6.3226*(W*0.01) + 7.0482*(W*0.01)**2 - 0.3014*(W*0.01)**3))
     return q
 
-def hilal_score_weighted(check_date, nm):
-    """Agirlikli hilal gorunurluk skoru."""
-    total_score  = 0.0
-    total_weight = 0.0
+def get_best_params(check_date, nm):
+    best_q   = -99.0
+    best_alt = -99.0
+    best_elong = 0.0
+    best_vis_weight = 0.0
 
     for loc_name, (loc, weight) in LOCATIONS.items():
         sunset_hour = get_sunset(loc, check_date.year, check_date.month, check_date.day)
-
-        # Sunset +30dk ile +2 saat arasi her 15 dakikada bir olc
-        for minute_offset in range(30, 135, 15):
+        # Sunset +20dk ile +90dk arasi en iyi ani bul
+        for minute_offset in range(20, 95, 5):
             hour_frac = sunset_hour + minute_offset / 60.0
             hour      = int(hour_frac)
             minute    = int((hour_frac - hour) * 60)
             if hour >= 24:
                 break
-
             t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
             obs   = (earth + loc).at(t)
             m_app = obs.observe(moon).apparent()
@@ -147,100 +94,67 @@ def hilal_score_weighted(check_date, nm):
             if alt_deg <= 0:
                 continue
 
+            q = yallop_q(alt_deg, elong)
+            if q > best_q:
+                best_q     = q
+                best_alt   = alt_deg
+                best_elong = elong
+                best_vis_weight = weight
+
+    return best_alt, best_elong, best_q, best_vis_weight
+
+def hilal_score_weighted(check_date, nm):
+    total_score  = 0.0
+    total_weight = 0.0
+
+    for loc_name, (loc, weight) in LOCATIONS.items():
+        sunset_hour = get_sunset(loc, check_date.year, check_date.month, check_date.day)
+        for minute_offset in range(20, 120, 10):
+            hour_frac = sunset_hour + minute_offset / 60.0
+            hour      = int(hour_frac)
+            minute    = int((hour_frac - hour) * 60)
+            if hour >= 24:
+                break
+            t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
+            obs   = (earth + loc).at(t)
+            m_app = obs.observe(moon).apparent()
+            s_app = obs.observe(sun).apparent()
+            alt_m, _, _ = m_app.altaz()
+            elong        = m_app.separation_from(s_app).degrees
+            alt_deg      = alt_m.degrees
+            if alt_deg <= 0:
+                continue
             age_hours = (
                 datetime.combine(check_date, datetime.min.time(), tzinfo=timezone.utc) - nm
             ).total_seconds() / 3600.0
-
             illum = ((1 - math.cos(math.radians(elong))) / 2) * 100
             q     = yallop_q(alt_deg, elong)
-
-            score = (
-                alt_deg   * 1.5 +
-                elong     * 0.8 +
-                age_hours * 0.05 +
-                illum     * 0.3 +
-                max(q, 0) * 2.0
-            )
-
+            score = alt_deg*1.5 + elong*0.8 + age_hours*0.05 + illum*0.3 + max(q,0)*2.0
             total_score  += score * weight
             total_weight += weight
 
     return total_score / total_weight if total_weight > 0 else 0.0
 
-def check_visibility_criteria(check_date, nm):
-    """
-    Turkiye Diyanet + IICH kriterleri ile gorunurluk kontrolu.
-    Ankara ve Istanbul icin IICH kriterini kontrol et.
-    """
-    visible_locations = 0
-    best_q = -99.0
-
-    for loc_name, (loc, weight) in LOCATIONS.items():
-        params = get_moon_params(loc, check_date, nm, minutes_after_sunset=40)
-        if not params:
-            continue
-
-        alt   = params["alt"]
-        elong = params["elong"]
-        age   = params["age"]
-
-        if alt <= 0:
-            continue
-
-        q = yallop_q(alt, elong)
-        if q > best_q:
-            best_q = q
-
-        # IICH kriteri saglaniyorsa gorunur say
-        if iich_criterion(alt, elong):
-            visible_locations += weight
-
-    return visible_locations, best_q
-
 def find_month_start(nm):
-    """
-    Ay basini belirle.
-    Oncelik sirasi:
-    1. D1'de IICH kriteri saglaniyorsa ve Yallop q >= -0.014 ise D1
-    2. D1'de zayif gorunurluk, D2'de guclu gorunurluk varsa D2
-    3. Agirlikli skor karsilastirmasi
-    4. Varsayilan: D1
-    """
     d1 = nm.date() + timedelta(days=1)
     d2 = nm.date() + timedelta(days=2)
 
-    vis1, q1 = check_visibility_criteria(d1, nm)
-    vis2, q2 = check_visibility_criteria(d2, nm)
+    alt1, elong1, q1, w1 = get_best_params(d1, nm)
+    alt2, elong2, q2, w2 = get_best_params(d2, nm)
     s1 = hilal_score_weighted(d1, nm)
     s2 = hilal_score_weighted(d2, nm)
 
-    # D1 net gorunur: yuksek agirlik + iyi q degeri
-    if vis1 >= 5.0 and q1 >= -0.014:
-        return d1
+    # D1 hic gorunmez (ay ufkun altinda veya cok kotu q)
+    d1_invisible = (alt1 <= 0 or q1 < -0.293)
+    d2_visible   = (alt2 > 0 and q2 >= -0.293)
 
-    # D1 gorunur ama orta: skor da destekliyorsa D1
-    if vis1 >= 3.5 and q1 >= -0.160 and s1 >= 15.0:
-        return d1
-
-    # D1 hic gorunmez ama D2 gorunur: D2
-    if vis1 < 1.0 and vis2 >= 3.0:
+    # D1 tamamen gorunmez, D2 gorunur -> D2
+    if d1_invisible and d2_visible:
         return d2
 
-    # Her ikisi de gorunur: agirlikli skor ve q karsilastir
-    if vis1 >= 1.0 and vis2 >= 1.0:
-        # D1 belirgin ustunse D1
-        if q1 >= q2 - 0.05 and s1 >= s2 * 0.85:
-            return d1
-        # D2 belirgin ustunse D2
-        if q2 > q1 + 0.1 or s2 > s1 * 1.20:
-            return d2
+    # D1 gorunur -> D1 (agresif D1 tercihi)
+    if not d1_invisible:
         return d1
-
-    # Skor bazli fallback
-    if s1 >= 18.0:
-        return d1
-    if s1 > 0 and (s2 - s1) / max(s1, 1) > 0.30:
-        return d2
 
     return d1
 
@@ -361,7 +275,7 @@ HELP_TEXT = (
     "/hilal                          Hilal gorunurlugu\n"
     "/miladiden 2026-03-20           Miladi > Hicri\n"
     "/hicridenmiladi 15 Ramazan 1446 Hicri > Miladi\n"
-    "/analiz                         Dogruluk analizi (+-0 gun)\n"
+    "/analiz                         Dogruluk analizi\n"
     "/karsilastir 2026               Karsilastirma\n"
     "/yardim                         Bu menu\n"
 )
@@ -488,24 +402,29 @@ async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not nm:
         return await reply_error(update, "Yeni ay verisi bulunamadi.")
     age_hours = (today - nm.date()).days * 24
-    score     = hilal_score_weighted(today, nm)
-    vis, q    = check_visibility_criteria(today, nm)
+    alt, elong, q, w = get_best_params(today, nm)
+    score = hilal_score_weighted(today, nm)
 
-    if vis >= 5.0 and q >= -0.014:
-        durum = "Gorunur - IICH kriterine gore kesin gorunur"
-    elif vis >= 3.0 or q >= -0.160:
-        durum = "Muhtemelen gorunur - gozlem onerilir"
-    elif q >= -0.293:
+    if q >= 0.216:
+        durum = "Kolay gorunur - acik gozle kesin"
+    elif q >= -0.014:
+        durum = "Gorunur - normal kosullarda gorunur"
+    elif q >= -0.160:
+        durum = "Zor gorunur - iyi gozlemci gorebilir"
+    elif q >= -0.232:
         durum = "Optik aracla gorunebilir"
+    elif q >= -0.293:
+        durum = "Optik aracla zor gorunur"
     else:
         durum = "Gorunmez"
 
     text = ("Hilal Durumu - " + str(today) + "\n\n"
-            "Son Yeni Ay    : " + str(nm.date()) + "\n"
-            "Ay Yasi        : " + str(int(age_hours)) + " saat\n"
-            "Agirlikli Skor : " + str(round(score, 1)) + "\n"
-            "Yallop-q       : " + str(round(q, 3)) + "\n"
-            "Gorunurluk Ind : " + str(round(vis, 1)) + "\n\n"
+            "Son Yeni Ay : " + str(nm.date()) + "\n"
+            "Ay Yasi     : " + str(int(age_hours)) + " saat\n"
+            "Irtifa      : " + str(round(alt, 1)) + " derece\n"
+            "Elongasyon  : " + str(round(elong, 1)) + " derece\n"
+            "Yallop-q    : " + str(round(q, 3)) + "\n"
+            "Skor        : " + str(round(score, 1)) + "\n\n"
             "Durum: " + durum)
     await update.message.reply_text(text)
 
@@ -585,7 +504,7 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("\nOzet\n"
                  "Tam isabet (+-0) : %" + str(round(acc0,1)) + "\n"
                  "+-1 gun          : %" + str(round(acc1,1)) + "\n"
-                 "Ort sapma        : " + str(round(ort,2)) + " gun\n"
+                 "Ort sapma        : " + str(round(ort,3)) + " gun\n"
                  "Maks sapma       : " + str(maks) + " gun\n"
                  "Test sayisi      : " + str(total))
     msg = "\n".join(lines)
