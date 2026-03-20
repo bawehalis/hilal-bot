@@ -133,9 +133,9 @@ OZEL = {
     (11,13): "Kurban Bayrami 4. Gunu",
 }
 
-ANCHOR_TARGET   = datetime(2025, 3, 1).date()
-ANCHOR_INDEX    = min(range(len(MONTHS)), key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days))
-MUHARREM_1446   = ANCHOR_INDEX - 8
+ANCHOR_TARGET = datetime(2025, 3, 1).date()
+ANCHOR_INDEX  = min(range(len(MONTHS)), key=lambda i: abs((MONTHS[i] - ANCHOR_TARGET).days))
+MUHARREM_1446 = ANCHOR_INDEX - 8
 
 def get_hijri(check_date):
     current = None
@@ -159,18 +159,22 @@ def date_from_hijri(hicri_yil, ay_index, gun):
     return MONTHS[target_idx] + timedelta(days=gun - 1)
 
 def find_month_date(year_miladi, ay_index):
+    candidates = []
     for i, m in enumerate(MONTHS):
         delta = i - MUHARREM_1446
-        if delta < 0:
+        if delta < -24 or delta > 600:
             continue
-        if delta % 12 == ay_index and m.year == year_miladi:
+        if delta % 12 == ay_index % 12:
+            candidates.append((m, i))
+
+    for m, i in candidates:
+        if m.year == year_miladi:
             return m, i
-    for i, m in enumerate(MONTHS):
-        delta = i - MUHARREM_1446
-        if delta < 0:
-            continue
-        if delta % 12 == ay_index and abs(m.year - year_miladi) == 1:
+
+    for m, i in candidates:
+        if abs(m.year - year_miladi) == 1:
             return m, i
+
     return None, None
 
 REAL_RAMADAN = {
@@ -416,6 +420,7 @@ async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for year, real in sorted(REAL_RAMADAN.items()):
         m, _ = find_month_date(year, 8)
         if not m:
+            lines.append("[?]  " + str(year) + " bulunamadi")
             continue
         diff = (m - real).days
         diffs.append(diff)
@@ -455,6 +460,18 @@ async def karsilastir(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("Gercek/Referans  : Veri yok")
     await update.message.reply_text("\n".join(lines))
 
+async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = ("ANCHOR_INDEX=" + str(ANCHOR_INDEX) + "\n"
+           "MUHARREM_1446=" + str(MUHARREM_1446) + "\n"
+           "MONTHS[ANCHOR]=" + str(MONTHS[ANCHOR_INDEX]) + "\n"
+           "MONTHS len=" + str(len(MONTHS)) + "\n\n"
+           "2020 Ramazan adaylari:\n")
+    for i, m in enumerate(MONTHS):
+        delta = i - MUHARREM_1446
+        if delta % 12 == 8 and 2019 <= m.year <= 2021:
+            msg += "i=" + str(i) + " delta=" + str(delta) + " " + str(m) + "\n"
+    await update.message.reply_text(msg)
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error("Hata: %s", context.error, exc_info=True)
     if isinstance(update, Update) and update.message:
@@ -478,6 +495,7 @@ def main():
     app.add_handler(CommandHandler("hicridenmiladi", hicridenmiladi))
     app.add_handler(CommandHandler("analiz",         analiz))
     app.add_handler(CommandHandler("karsilastir",    karsilastir))
+    app.add_handler(CommandHandler("debug",          debug))
     app.add_handler(MessageHandler(filters.COMMAND,  bilinmeyen))
     app.add_error_handler(error_handler)
     logger.info("Hicri Takvim Botu aktif!")
