@@ -22,15 +22,15 @@ moon = eph['moon']
 sun = eph['sun']
 
 # =========================
-# 1️⃣ ANCHOR (1995 AREFE)
+# ANCHOR (1995 AREFE)
 # =========================
-ANCHOR_DATE = datetime(1995, 6, 8).date()  # 9 Zilhicce 1415 (Arefe)
+ANCHOR_YEAR = 1995
+ANCHOR_DATE = datetime(1995, 6, 8).date()
 
-# 30 yıl döngüsü (artık yıllar)
 LEAP_YEARS = {2,5,7,10,13,16,18,21,24,26,29}
 
 # =========================
-# 2️⃣ NEW MOONS
+# NEW MOONS
 # =========================
 def get_new_moons():
     t0 = ts.utc(1990,1,1)
@@ -47,7 +47,7 @@ def get_new_moons():
 NEW_MOONS = get_new_moons()
 
 # =========================
-# 3️⃣ YALLOP MODEL
+# YALLOP MODEL
 # =========================
 def yallop_q(date, lat, lon):
 
@@ -70,42 +70,46 @@ def yallop_q(date, lat, lon):
 def hilal_visible(date):
 
     points = [
-        (21.4,39.8),   # Mekke
-        (39.9,32.8),   # Ankara
-        (35.7,51.4),   # Tahran
+        (21.4,39.8),
+        (39.9,32.8),
+        (35.7,51.4),
     ]
 
     qs = [yallop_q(date, lat, lon) for lat,lon in points]
-
     avg_q = sum(qs)/len(qs)
 
     return avg_q > 0
 
 # =========================
-# 4️⃣ AREFE HESAP (DÖNGÜ)
+# AREFE HESAP (FIXED)
 # =========================
 def get_arefe(year):
 
-    diff_years = year - 1995
-
     date = ANCHOR_DATE
 
-    for i in range(diff_years):
-        cycle_year = (i % 30) + 1
-
-        if cycle_year in LEAP_YEARS:
-            date += timedelta(days=355)
-        else:
-            date += timedelta(days=354)
+    if year >= ANCHOR_YEAR:
+        for y in range(ANCHOR_YEAR, year):
+            cycle = ((y - ANCHOR_YEAR) % 30) + 1
+            date += timedelta(days=355 if cycle in LEAP_YEARS else 354)
+    else:
+        for y in range(year, ANCHOR_YEAR):
+            cycle = ((y - ANCHOR_YEAR) % 30) + 1
+            date -= timedelta(days=355 if cycle in LEAP_YEARS else 354)
 
     return date
 
 # =========================
-# 5️⃣ AY BAŞLANGICI (YALLOP)
+# DOĞRU NEW MOON SEÇİMİ
+# =========================
+def get_prev_new_moon(date):
+    return max([nm for nm in NEW_MOONS if nm.date() <= date])
+
+# =========================
+# AY BAŞLANGICI
 # =========================
 def find_month_start(approx_date):
 
-    nm = min(NEW_MOONS, key=lambda x: abs((x.date() - approx_date)))
+    nm = get_prev_new_moon(approx_date)
 
     for i in range(1,4):
         d = (nm + timedelta(days=i)).date()
@@ -116,24 +120,19 @@ def find_month_start(approx_date):
     return (nm + timedelta(days=2)).date()
 
 # =========================
-# 6️⃣ YIL ANALİZ
+# YIL ANALİZ
 # =========================
 def analyze_year(year):
 
     arefe = get_arefe(year)
 
-    # 🔥 Zilhicce başlangıcı
     zilhicce = arefe - timedelta(days=8)
-
-    # 🔥 Kurban
     kurban = arefe + timedelta(days=1)
 
-    # 🔥 Ramazan approx
+    # Ramazan yaklaşık (266 gün geri)
     ramazan_guess = zilhicce - timedelta(days=266)
 
-    # 🔥 Hilal düzeltme
     ramazan = find_month_start(ramazan_guess)
-
     bayram = ramazan + timedelta(days=29)
 
     return {
@@ -144,7 +143,7 @@ def analyze_year(year):
     }
 
 # =========================
-# 7️⃣ KALİBRASYON (küçük düzeltme)
+# TEST DATA (kalibrasyon)
 # =========================
 REAL = {
     2023:"2023-06-28",
@@ -172,7 +171,6 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = analyze_year(y)
 
-    # kalibrasyon
     data["arefe"] = calibrate(y, data["arefe"])
     data["kurban"] = data["arefe"] + timedelta(days=1)
 
@@ -190,10 +188,7 @@ async def yil(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "🚀 Hicri Engine\n\n/yil 2025"
-    )
+    await update.message.reply_text("🚀 Hicri Motor\n\n/yil 2025")
 
 # =========================
 # APP
@@ -203,5 +198,5 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("yil", yil))
 
-print("🚀 ULTIMATE HİCRİ ENGINE AKTİF")
+print("🚀 STABLE HİCRİ ENGINE AKTİF")
 app.run_polling()
