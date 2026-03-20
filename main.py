@@ -91,11 +91,60 @@ def hilal_score(check_date, nm):
             count += 1
     return total / count if count > 0 else 0.0
 
+def hilal_gorunur_mu(check_date, nm):
+    best_alt   = -99.0
+    best_elong = 0.0
+
+    for loc_name, loc in LOCATIONS.items():
+        sunset_hour = get_sunset(loc, check_date.year, check_date.month, check_date.day)
+        hour_frac = sunset_hour + 40.0 / 60.0
+        hour      = int(hour_frac)
+        minute    = int((hour_frac - hour) * 60)
+        if hour >= 24:
+            continue
+
+        t     = ts.utc(check_date.year, check_date.month, check_date.day, hour, minute)
+        obs   = (earth + loc).at(t)
+        m_app = obs.observe(moon).apparent()
+        s_app = obs.observe(sun).apparent()
+        alt_m, _, _ = m_app.altaz()
+        elong        = m_app.separation_from(s_app).degrees
+        alt_deg      = alt_m.degrees
+
+        if alt_deg > best_alt:
+            best_alt   = alt_deg
+            best_elong = elong
+
+    if best_alt <= 0:
+        return False, -99.0
+
+    W    = best_elong
+    ARCV = best_alt
+    q    = (ARCV - (11.8371 - 6.3226 * (W * 0.01) + 7.0482 * (W * 0.01) ** 2))
+    return q >= -0.293, q
+
 def find_month_start(nm):
     d1 = nm.date() + timedelta(days=1)
     d2 = nm.date() + timedelta(days=2)
+
     s1 = hilal_score(d1, nm)
     s2 = hilal_score(d2, nm)
+    g1, q1 = hilal_gorunur_mu(d1, nm)
+    g2, q2 = hilal_gorunur_mu(d2, nm)
+
+    if s1 >= 20.0 and g1:
+        return d1
+
+    if not g1 and g2:
+        return d2
+
+    if g1 and g2:
+        if s1 >= 16.0 and (s2 - s1) / max(s1, 1) < 0.20:
+            return d1
+        if (s2 - s1) / max(s1, 1) > 0.30:
+            return d2
+        return d1
+
     if s1 >= 18.0:
         return d1
     if s1 > 0 and (s2 - s1) / max(s1, 1) > 0.25:
@@ -351,16 +400,18 @@ async def hilal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await reply_error(update, "Yeni ay verisi bulunamadi.")
     age_hours = (today - nm.date()).days * 24
     score     = hilal_score(today, nm)
-    if score >= 18:
+    g, q      = hilal_gorunur_mu(today, nm)
+    if score >= 18 and g:
         durum = "Gorunur - kuvvetle muhtemel"
-    elif score >= 10:
+    elif score >= 10 or g:
         durum = "Belirsiz - gozlem onerilir"
     else:
         durum = "Gorunmez - zor"
     text = ("Hilal Durumu - " + str(today) + "\n\n"
             "Son Yeni Ay : " + str(nm.date()) + "\n"
             "Ay Yasi     : " + str(int(age_hours)) + " saat\n"
-            "Skor        : " + str(round(score, 1)) + "\n\n"
+            "Skor        : " + str(round(score, 1)) + "\n"
+            "Yallop-q    : " + str(round(q, 3)) + "\n\n"
             "Durum: " + durum)
     await update.message.reply_text(text)
 
