@@ -1,0 +1,15 @@
+[Unit]
+Description=Hilal Takvim Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/hilal-bot
+Environment=TOKEN=8753120343:AAE2aMb0w8CAE4AnpvPkJu-SgUaYBol_WZw
+ExecStart=/root/hilal-bot/venv/bin/python3 main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
